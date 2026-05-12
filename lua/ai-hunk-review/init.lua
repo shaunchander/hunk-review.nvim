@@ -3,6 +3,7 @@ local M = {}
 local api = vim.api
 
 local ns = api.nvim_create_namespace("ai-hunk-review")
+local syntax_ns = api.nvim_create_namespace("ai-hunk-review-syntax")
 
 local state = {
   layout = nil,
@@ -21,6 +22,11 @@ local state = {
   comments = {},
   file_filter = "",
   selected_file = nil,
+  diff_mode = "uncommitted",
+  base_branch = nil,
+  peek_winid = nil,
+  peek_return_cursor = nil,
+  collapsed_dirs = {},
 }
 
 local function notify(message, level)
@@ -62,6 +68,22 @@ local function git_root()
   end
 
   return vim.trim(root), nil
+end
+
+local function detect_base_branch()
+  if state.base_branch then
+    return state.base_branch
+  end
+
+  for _, branch in ipairs({ "main", "master", "develop" }) do
+    local ok = system({ "git", "rev-parse", "--verify", branch })
+    if ok then
+      state.base_branch = branch
+      return branch
+    end
+  end
+
+  return nil
 end
 
 local function make_hunk_id(file_path, header)
@@ -123,10 +145,26 @@ local function collect_hunks(diff_text)
   return hunks
 end
 
-local function load_hunks()
+local function load_hunks(mode)
   local root, root_err = git_root()
   if not root then
     return nil, root_err or "Not inside a Git repository"
+  end
+
+  local diff_target = "HEAD"
+
+  if mode == "full" then
+    local base = detect_base_branch()
+    if not base then
+      return nil, "Could not detect base branch (tried main, master, develop)"
+    end
+
+    local merge_base, mb_err = system({ "git", "-C", root, "merge-base", base, "HEAD" })
+    if not merge_base then
+      return nil, mb_err or "Could not find merge-base"
+    end
+
+    diff_target = vim.trim(merge_base)
   end
 
   local diff, diff_err = system({
@@ -137,7 +175,7 @@ local function load_hunks()
     "--no-color",
     "--no-ext-diff",
     "--unified=3",
-    "HEAD",
+    diff_target,
     "--",
   })
 
@@ -288,7 +326,33 @@ current_file_entries = function()
   return entries
 end
 
+local peek_keymaps = {}
+
+local function clear_peek_keymaps()
+  for _, km in ipairs(peek_keymaps) do
+    pcall(vim.keymap.del, "n", km.lhs, { buffer = km.buf })
+  end
+  peek_keymaps = {}
+end
+
+local function close_peek()
+  clear_peek_keymaps()
+  pcall(api.nvim_del_augroup_by_name, "AiHunkReviewPeek")
+
+  if state.peek_winid and api.nvim_win_is_valid(state.peek_winid) then
+    pcall(api.nvim_win_close, state.peek_winid, true)
+  end
+  state.peek_winid = nil
+
+  if state.peek_return_cursor and state.review_winid and api.nvim_win_is_valid(state.review_winid) then
+    api.nvim_set_current_win(state.review_winid)
+    pcall(api.nvim_win_set_cursor, state.review_winid, state.peek_return_cursor)
+  end
+  state.peek_return_cursor = nil
+end
+
 local function close_layout()
+  close_peek()
   close_confirm_modal()
 
   if state.layout then
@@ -369,13 +433,166 @@ local function focus_review()
   end
 end
 
+local function open_peek()
+  close_peek()
+
+  local hunk, item = current_hunk_at_cursor()
+  if not hunk or not state.repo_root then
+    return
+  end
+
+  if state.review_winid and api.nvim_win_is_valid(state.review_winid) then
+    state.peek_return_cursor = api.nvim_win_get_cursor(state.review_winid)
+  end
+
+  local target = state.repo_root .. "/" .. hunk.file_path
+
+  local width, height, row, col
+  if state.review_winid and api.nvim_win_is_valid(state.review_winid) then
+    local pos = api.nvim_win_get_position(state.review_winid)
+    width = api.nvim_win_get_width(state.review_winid)
+    height = api.nvim_win_get_height(state.review_winid)
+    row = pos[1]
+    col = pos[2]
+  else
+    width = math.floor(vim.o.columns * 0.68)
+    height = math.floor(vim.o.lines * 0.92)
+    row = math.floor((vim.o.lines - height) / 2)
+    col = vim.o.columns - width - 2
+  end
+
+  local bufnr = vim.fn.bufadd(target)
+  vim.fn.bufload(bufnr)
+
+  local winid = api.nvim_open_win(bufnr, true, {
+    relative = "editor",
+    border = "rounded",
+    title = " Peek: " .. hunk.file_path .. " (q to close) ",
+    title_pos = "center",
+    width = math.max(width - 2, 1),
+    height = math.max(height - 2, 1),
+    row = row,
+    col = col,
+    zindex = 60,
+  })
+  state.peek_winid = winid
+
+  vim.wo[winid].number = true
+  vim.wo[winid].relativenumber = true
+  vim.wo[winid].cursorline = true
+  vim.wo[winid].signcolumn = "yes"
+  vim.wo[winid].wrap = false
+
+  pcall(api.nvim_win_set_cursor, winid, { item.source_line or 1, 0 })
+  vim.cmd("normal! zz")
+
+  vim.keymap.set("n", "q", close_peek, { buffer = bufnr, nowait = true, silent = true, desc = "Close peek" })
+  vim.keymap.set("n", "<Esc>", close_peek, { buffer = bufnr, nowait = true, silent = true, desc = "Close peek" })
+  peek_keymaps = {
+    { lhs = "q", buf = bufnr },
+    { lhs = "<Esc>", buf = bufnr },
+  }
+
+  local group = api.nvim_create_augroup("AiHunkReviewPeek", { clear = true })
+  api.nvim_create_autocmd("WinClosed", {
+    group = group,
+    pattern = tostring(winid),
+    once = true,
+    callback = function()
+      clear_peek_keymaps()
+      state.peek_winid = nil
+      if state.peek_return_cursor and state.review_winid and api.nvim_win_is_valid(state.review_winid) then
+        api.nvim_set_current_win(state.review_winid)
+        pcall(api.nvim_win_set_cursor, state.review_winid, state.peek_return_cursor)
+      end
+      state.peek_return_cursor = nil
+    end,
+  })
+end
+
+local function apply_explorer_keymaps(bufnr)
+  local function map(lhs, fn, desc)
+    vim.keymap.set("n", lhs, fn, { buffer = bufnr, nowait = true, silent = true, desc = desc })
+  end
+
+  map("q", close_layout, "Close review layout")
+  map("r", function() M.refresh() end, "Refresh review layout")
+  map("<CR>", function() M.select_file() end, "Select file")
+  map("o", function() M.select_file() end, "Open file in review")
+  map("/", function() M.filter_files() end, "Filter files")
+  map("x", function() M.clear_filter() end, "Clear file filter")
+  map("<C-l>", focus_review, "Focus review pane")
+
+  vim.keymap.set("n", "[", function() M.prev_tab() end, { buffer = bufnr, silent = true, desc = "Previous diff tab" })
+  vim.keymap.set("n", "]", function() M.next_tab() end, { buffer = bufnr, silent = true, desc = "Next diff tab" })
+end
+
+local function apply_review_keymaps(bufnr)
+  local function map(lhs, fn, desc)
+    vim.keymap.set("n", lhs, fn, { buffer = bufnr, nowait = true, silent = true, desc = desc })
+  end
+
+  map("q", close_layout, "Close review buffer")
+  map("r", function() M.refresh() end, "Refresh review buffer")
+  map("]h", function() M.next_hunk() end, "Next hunk")
+  map("[h", function() M.prev_hunk() end, "Previous hunk")
+  map("j", function() M.next_change() end, "Next change")
+  map("k", function() M.prev_change() end, "Previous change")
+  map("<CR>", function() M.confirm_review() end, "Confirm and copy review")
+  map("o", function() M.jump_to_source() end, "Open source")
+  map("p", open_peek, "Peek source with LSP")
+  map("c", function() M.add_comment() end, "Add change comment")
+  map("e", function() M.export() end, "Export review instructions")
+  map("<C-h>", focus_explorer, "Focus explorer pane")
+
+  vim.keymap.set("n", "[", function() M.prev_tab() end, { buffer = bufnr, silent = true, desc = "Previous diff tab" })
+  vim.keymap.set("n", "]", function() M.next_tab() end, { buffer = bufnr, silent = true, desc = "Next diff tab" })
+end
+
 local function clipboard_text()
-  local payload = export_payload()
-  return encode_pretty(payload)
+  local sections = {}
+
+  for _, hunk in ipairs(state.hunks) do
+    local commented_blocks = {}
+
+    for _, block in ipairs(collect_change_blocks(hunk)) do
+      local comment = state.comments[block.id]
+      if comment and comment ~= "" then
+        table.insert(commented_blocks, {
+          comment = comment,
+          lines = block.lines,
+          line = source_line_for_hunk_offset(hunk, block.start),
+        })
+      end
+    end
+
+    if #commented_blocks > 0 then
+      for _, cb in ipairs(commented_blocks) do
+        table.insert(sections, cb.comment)
+        table.insert(sections, hunk.file_path .. ":" .. cb.line)
+        table.insert(sections, "```")
+        for _, line in ipairs(cb.lines) do
+          table.insert(sections, line)
+        end
+        table.insert(sections, "```")
+        table.insert(sections, "")
+      end
+    end
+  end
+
+  if #sections == 0 then
+    return nil
+  end
+
+  return table.concat(sections, "\n")
 end
 
 local function copy_review_to_clipboard()
   local text = clipboard_text()
+  if not text then
+    notify("No commented blocks to copy", vim.log.levels.WARN)
+    return
+  end
   vim.fn.setreg("+", text)
   vim.fn.setreg("*", text)
   vim.fn.setreg('"', text)
@@ -461,33 +678,7 @@ local function ensure_explorer_buffer()
   vim.bo[bufnr].filetype = "aihunkreviewexplorer"
   vim.bo[bufnr].buflisted = false
 
-  vim.keymap.set("n", "q", function()
-    close_layout()
-  end, { buffer = bufnr, silent = true, desc = "Close review layout" })
-
-  vim.keymap.set("n", "r", function()
-    M.refresh()
-  end, { buffer = bufnr, silent = true, desc = "Refresh review layout" })
-
-  vim.keymap.set("n", "<CR>", function()
-    M.select_file()
-  end, { buffer = bufnr, silent = true, desc = "Select file" })
-
-  vim.keymap.set("n", "o", function()
-    M.select_file()
-  end, { buffer = bufnr, silent = true, desc = "Open file in review" })
-
-  vim.keymap.set("n", "/", function()
-    M.filter_files()
-  end, { buffer = bufnr, silent = true, desc = "Filter files" })
-
-  vim.keymap.set("n", "x", function()
-    M.clear_filter()
-  end, { buffer = bufnr, silent = true, desc = "Clear file filter" })
-
-  vim.keymap.set("n", "<C-l>", function()
-    focus_review()
-  end, { buffer = bufnr, silent = true, desc = "Focus review pane" })
+  apply_explorer_keymaps(bufnr)
 
   return bufnr
 end
@@ -508,49 +699,7 @@ local function ensure_review_buffer()
   vim.bo[bufnr].filetype = "aihunkreview"
   vim.bo[bufnr].buflisted = false
 
-  vim.keymap.set("n", "q", function()
-    close_layout()
-  end, { buffer = bufnr, silent = true, desc = "Close review buffer" })
-
-  vim.keymap.set("n", "r", function()
-    M.refresh()
-  end, { buffer = bufnr, silent = true, desc = "Refresh review buffer" })
-
-  vim.keymap.set("n", "]h", function()
-    M.next_hunk()
-  end, { buffer = bufnr, silent = true, desc = "Next hunk" })
-
-  vim.keymap.set("n", "[h", function()
-    M.prev_hunk()
-  end, { buffer = bufnr, silent = true, desc = "Previous hunk" })
-
-  vim.keymap.set("n", "j", function()
-    M.next_change()
-  end, { buffer = bufnr, silent = true, desc = "Next change" })
-
-  vim.keymap.set("n", "k", function()
-    M.prev_change()
-  end, { buffer = bufnr, silent = true, desc = "Previous change" })
-
-  vim.keymap.set("n", "<CR>", function()
-    M.confirm_review()
-  end, { buffer = bufnr, silent = true, desc = "Confirm and copy review" })
-
-  vim.keymap.set("n", "o", function()
-    M.jump_to_source()
-  end, { buffer = bufnr, silent = true, desc = "Open source" })
-
-  vim.keymap.set("n", "c", function()
-    M.add_comment()
-  end, { buffer = bufnr, silent = true, desc = "Add change comment" })
-
-  vim.keymap.set("n", "e", function()
-    M.export()
-  end, { buffer = bufnr, silent = true, desc = "Export review instructions" })
-
-  vim.keymap.set("n", "<C-h>", function()
-    focus_explorer()
-  end, { buffer = bufnr, silent = true, desc = "Focus explorer pane" })
+  apply_review_keymaps(bufnr)
 
   local group = api.nvim_create_augroup("AiHunkReviewSync", { clear = false })
   api.nvim_create_autocmd("CursorMoved", {
@@ -580,6 +729,15 @@ local function ensure_layout()
         show = false,
         fixbuf = true,
         border = "none",
+        keys = {
+          q = function() close_layout() end,
+          r = function() M.refresh() end,
+          ["<CR>"] = function() M.select_file() end,
+          o = function() M.select_file() end,
+          ["/"] = function() M.filter_files() end,
+          x = function() M.clear_filter() end,
+          ["<C-l>"] = function() focus_review() end,
+        },
         wo = {
           wrap = false,
           cursorline = true,
@@ -596,6 +754,20 @@ local function ensure_layout()
         show = false,
         fixbuf = true,
         border = "none",
+        keys = {
+          q = function() close_layout() end,
+          r = function() M.refresh() end,
+          ["]h"] = function() M.next_hunk() end,
+          ["[h"] = function() M.prev_hunk() end,
+          j = function() M.next_change() end,
+          k = function() M.prev_change() end,
+          ["<CR>"] = function() M.confirm_review() end,
+          o = function() M.jump_to_source() end,
+          p = function() open_peek() end,
+          c = function() M.add_comment() end,
+          e = function() M.export() end,
+          ["<C-h>"] = function() focus_explorer() end,
+        },
         wo = {
           wrap = false,
           cursorline = false,
@@ -777,6 +949,85 @@ local function source_line_for_hunk_offset(hunk, diff_index)
   return math.max(target, 1)
 end
 
+local function build_file_tree(entries)
+  local root = { children = {}, files = {} }
+
+  for _, entry in ipairs(entries) do
+    local parts = {}
+    for part in entry.file_path:gmatch("[^/]+") do
+      table.insert(parts, part)
+    end
+
+    if #parts == 1 then
+      table.insert(root.files, entry)
+    else
+      local node = root
+      for i = 1, #parts - 1 do
+        local dir = parts[i]
+        if not node.children[dir] then
+          node.children[dir] = { children = {}, files = {} }
+        end
+        node = node.children[dir]
+      end
+      table.insert(node.files, entry)
+    end
+  end
+
+  return root
+end
+
+local function compact_dir_path(node, name)
+  local child_names = vim.tbl_keys(node.children)
+  if #child_names == 1 and #node.files == 0 then
+    local child_name = child_names[1]
+    local merged = name .. "/" .. child_name
+    return compact_dir_path(node.children[child_name], merged)
+  end
+  return node, name
+end
+
+local function render_tree_node(node, dir_path, lines, highlights, line_map, depth)
+  local dir_names = vim.tbl_keys(node.children)
+  table.sort(dir_names)
+
+  for _, dir_name in ipairs(dir_names) do
+    local child = node.children[dir_name]
+    local compacted, display_name = compact_dir_path(child, dir_name)
+    local full_path = dir_path ~= "" and (dir_path .. "/" .. display_name) or display_name
+    local collapsed = state.collapsed_dirs[full_path]
+    local indent = string.rep("  ", depth)
+    local chevron = collapsed and "▸" or "▾"
+
+    table.insert(lines, indent .. chevron .. "  " .. display_name .. "/")
+    table.insert(highlights, { line = #lines - 1, group = "Directory" })
+    line_map[#lines] = { dir_path = full_path }
+
+    if not collapsed then
+      render_tree_node(compacted, full_path, lines, highlights, line_map, depth + 1)
+    end
+  end
+
+  local sorted_files = vim.tbl_values(node.files)
+  table.sort(sorted_files, function(a, b)
+    local a_name = a.file_path:match("[^/]+$")
+    local b_name = b.file_path:match("[^/]+$")
+    return a_name < b_name
+  end)
+
+  for _, entry in ipairs(sorted_files) do
+    local fname = entry.file_path:match("[^/]+$")
+    local indent = string.rep("  ", depth)
+    local selected = entry.file_path == state.selected_file
+    local marker = selected and ">" or " "
+    local icon = file_icon(entry.file_path)
+    local stats = string.format("  %dh %dc", entry.hunk_count, entry.change_count)
+
+    table.insert(lines, indent .. marker .. " " .. icon .. " " .. fname .. stats)
+    line_map[#lines] = { file_path = entry.file_path }
+    table.insert(highlights, { line = #lines - 1, group = selected and "Directory" or "Normal" })
+  end
+end
+
 render_explorer = function()
   local bufnr = ensure_explorer_buffer()
   local lines = {}
@@ -784,7 +1035,8 @@ render_explorer = function()
   local line_map = {}
   local entries = filtered_file_entries()
 
-  table.insert(lines, "Changed Files")
+  local mode_label = state.diff_mode == "full" and "Full Diff" or "Uncommitted"
+  table.insert(lines, "Changed Files (" .. mode_label .. ")")
   table.insert(highlights, { line = #lines - 1, group = "Title" })
   local filter_label = vim.trim(state.file_filter or "")
   table.insert(lines, filter_label ~= "" and ("Filter: " .. filter_label) or "Filter: [none]  (/ to set, x to clear)")
@@ -794,15 +1046,8 @@ render_explorer = function()
   if #entries == 0 then
     table.insert(lines, filter_label ~= "" and "No matching files." or "No hunks found.")
   else
-    for _, entry in ipairs(entries) do
-      local prefix = entry.file_path == state.selected_file and "> " or "  "
-      table.insert(lines, prefix .. file_icon(entry.file_path) .. " " .. entry.file_path)
-      line_map[#lines] = { file_path = entry.file_path }
-      table.insert(highlights, { line = #lines - 1, group = entry.file_path == state.selected_file and "Directory" or "Normal" })
-
-      table.insert(lines, string.format("    %d hunks  %d change blocks", entry.hunk_count, entry.change_count))
-      table.insert(highlights, { line = #lines - 1, group = "Comment" })
-    end
+    local tree = build_file_tree(entries)
+    render_tree_node(tree, "", lines, highlights, line_map, 0)
   end
 
   vim.bo[bufnr].modifiable = true
@@ -822,20 +1067,134 @@ render_explorer = function()
   end
 end
 
+local ts_query_get = vim.treesitter.query.get or vim.treesitter.query.get_query
+
+local function apply_syntax_highlights(bufnr)
+  api.nvim_buf_clear_namespace(bufnr, syntax_ns, 0, -1)
+
+  local file_lines = {}
+  for line_nr, item in pairs(state.line_map) do
+    if item.kind == "diff_line" and item.hunk then
+      local fp = item.hunk.file_path
+      if not file_lines[fp] then
+        file_lines[fp] = {}
+      end
+      table.insert(file_lines[fp], {
+        line_nr = line_nr,
+        is_delete = item.change_kind == "delete",
+        is_add = item.change_kind == "add",
+      })
+    end
+  end
+
+  for file_path, entries in pairs(file_lines) do
+    local ft = vim.filetype.match({ filename = file_path })
+    if not ft then
+      goto continue
+    end
+
+    local lang = ft
+    if vim.treesitter.language.get_lang then
+      lang = vim.treesitter.language.get_lang(ft) or ft
+    end
+
+    table.sort(entries, function(a, b) return a.line_nr < b.line_nr end)
+
+    local new_content, new_map = {}, {}
+    local old_content, old_map = {}, {}
+
+    for _, entry in ipairs(entries) do
+      local line = api.nvim_buf_get_lines(bufnr, entry.line_nr - 1, entry.line_nr, false)[1] or ""
+      local code = line:sub(6)
+      if not entry.is_delete then
+        table.insert(new_content, code)
+        new_map[#new_content] = entry.line_nr
+      end
+      if not entry.is_add then
+        table.insert(old_content, code)
+        old_map[#old_content] = entry.line_nr
+      end
+    end
+
+    local function highlight_content(content, lmap)
+      if #content == 0 then
+        return
+      end
+
+      local tmp = api.nvim_create_buf(false, true)
+      api.nvim_buf_set_lines(tmp, 0, -1, false, content)
+
+      local ok, parser = pcall(vim.treesitter.get_parser, tmp, lang)
+      if not ok then
+        api.nvim_buf_delete(tmp, { force = true })
+        return
+      end
+
+      parser:parse()
+
+      local trees = parser:trees()
+      if not trees or #trees == 0 then
+        api.nvim_buf_delete(tmp, { force = true })
+        return
+      end
+
+      local qok, query = pcall(ts_query_get, lang, "highlights")
+      if not qok or not query then
+        api.nvim_buf_delete(tmp, { force = true })
+        return
+      end
+
+      for id, node in query:iter_captures(trees[1]:root(), tmp) do
+        local hl = "@" .. query.captures[id]
+        local sr, sc, er, ec = node:range()
+        for row = sr, er do
+          local review_ln = lmap[row + 1]
+          if review_ln then
+            local cs = (row == sr) and (sc + 5) or 5
+            local ce = (row == er) and (ec + 5) or -1
+            api.nvim_buf_add_highlight(bufnr, syntax_ns, hl, review_ln - 1, cs, ce)
+          end
+        end
+      end
+
+      api.nvim_buf_delete(tmp, { force = true })
+    end
+
+    highlight_content(new_content, new_map)
+    highlight_content(old_content, old_map)
+
+    ::continue::
+  end
+end
+
 local function render_review()
   local bufnr = ensure_review_buffer()
   local lines = {}
   local highlights = {}
   local line_map = {}
 
-  table.insert(lines, "AI Hunk Review")
+  local tab_uncommitted = state.diff_mode == "uncommitted" and "[Uncommitted]" or " Uncommitted "
+  local tab_full = state.diff_mode == "full" and "[Full Diff]" or " Full Diff "
+  local tab_line = " " .. tab_uncommitted .. "   " .. tab_full
+  table.insert(lines, tab_line)
+  local tab_row = #lines - 1
+  local u_start = 1
+  local u_end = u_start + #tab_uncommitted
+  local f_start = u_end + 3
+  local f_end = f_start + #tab_full
+  table.insert(highlights, { line = tab_row, col_start = u_start, col_end = u_end, group = state.diff_mode == "uncommitted" and "Title" or "Comment" })
+  table.insert(highlights, { line = tab_row, col_start = f_start, col_end = f_end, group = state.diff_mode == "full" and "Title" or "Comment" })
   table.insert(lines, "")
 
   if #state.hunks == 0 then
-    table.insert(lines, "No hunks found in git diff HEAD.")
+    local empty_msg = state.diff_mode == "full"
+      and "No hunks found in merge-base diff."
+      or "No hunks found in git diff HEAD."
+    table.insert(lines, empty_msg)
     table.insert(lines, "")
-    table.insert(lines, "Press r to refresh.")
+    table.insert(lines, "Press r to refresh, [ ] to switch tabs.")
   else
+    local prev_file = nil
     for hunk_index, hunk in ipairs(state.hunks) do
       local blocks = collect_change_blocks(hunk)
       local block_by_line = {}
@@ -846,7 +1205,28 @@ local function render_review()
         end
       end
 
-      table.insert(lines, "  " .. hunk.file_path .. " " .. hunk.header)
+      if hunk.file_path ~= prev_file then
+        if prev_file then
+          table.insert(lines, "")
+        end
+        local separator = string.rep("─", 60)
+        table.insert(lines, separator)
+        table.insert(highlights, { line = #lines - 1, group = "Comment" })
+        table.insert(lines, "  " .. file_icon(hunk.file_path) .. " " .. hunk.file_path)
+        table.insert(highlights, { line = #lines - 1, group = "Statement" })
+        line_map[#lines] = {
+          kind = "file_header",
+          hunk_index = hunk_index,
+          hunk = hunk,
+          source_line = hunk.parsed and hunk.parsed.new_start or 1,
+        }
+        table.insert(lines, separator)
+        table.insert(highlights, { line = #lines - 1, group = "Comment" })
+        table.insert(lines, "")
+        prev_file = hunk.file_path
+      end
+
+      table.insert(lines, "  " .. hunk.header)
       table.insert(highlights, { line = #lines - 1, group = "Directory" })
       line_map[#lines] = {
         kind = "hunk_header",
@@ -914,11 +1294,14 @@ local function render_review()
   api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 
   for _, item in ipairs(highlights) do
-    api.nvim_buf_add_highlight(bufnr, ns, item.group, item.line, 0, -1)
+    local col_start = item.col_start or 0
+    local col_end = item.col_end or -1
+    api.nvim_buf_add_highlight(bufnr, ns, item.group, item.line, col_start, col_end)
   end
 
   vim.bo[bufnr].modifiable = false
   state.line_map = line_map
+  apply_syntax_highlights(bufnr)
 
   if state.review_winid and api.nvim_win_is_valid(state.review_winid) then
     api.nvim_win_set_buf(state.review_winid, bufnr)
@@ -938,7 +1321,7 @@ local function set_state_from_diff(diff_state)
 end
 
 function M.refresh()
-  local diff_state, err = load_hunks()
+  local diff_state, err = load_hunks(state.diff_mode)
   if not diff_state then
     notify(err or "Failed to load Git hunks", vim.log.levels.ERROR)
     return
@@ -948,19 +1331,68 @@ function M.refresh()
   render()
 end
 
+local diff_modes = { "uncommitted", "full" }
+
+local function toggle_diff_mode(direction)
+  local current = 1
+  for i, mode in ipairs(diff_modes) do
+    if mode == state.diff_mode then
+      current = i
+      break
+    end
+  end
+
+  current = current + direction
+  if current < 1 then
+    current = #diff_modes
+  elseif current > #diff_modes then
+    current = 1
+  end
+
+  state.diff_mode = diff_modes[current]
+  M.refresh()
+end
+
+function M.next_tab()
+  toggle_diff_mode(1)
+end
+
+function M.prev_tab()
+  toggle_diff_mode(-1)
+end
+
 function M.open()
   M.refresh()
 end
 
 function M.select_file()
-  local file_path = current_explorer_file()
-  if not file_path then
+  local bufnr = api.nvim_get_current_buf()
+  if bufnr ~= state.explorer_bufnr then
     return
   end
 
-  select_file(file_path)
-  render()
-  jump_review_to_file(file_path)
+  local line = api.nvim_win_get_cursor(0)[1]
+  local item = state.explorer_line_map[line]
+  if not item then
+    return
+  end
+
+  if item.dir_path then
+    if state.collapsed_dirs[item.dir_path] then
+      state.collapsed_dirs[item.dir_path] = nil
+    else
+      state.collapsed_dirs[item.dir_path] = true
+    end
+    render_explorer()
+    pcall(api.nvim_win_set_cursor, 0, { line, 0 })
+    return
+  end
+
+  if item.file_path then
+    select_file(item.file_path)
+    render()
+    jump_review_to_file(item.file_path)
+  end
 end
 
 function M.filter_files()
@@ -1165,5 +1597,23 @@ end
 function M.confirm_review()
   open_confirm_modal()
 end
+
+local keymap_group = api.nvim_create_augroup("AiHunkReviewKeymaps", { clear = true })
+
+api.nvim_create_autocmd("FileType", {
+  group = keymap_group,
+  pattern = "aihunkreviewexplorer",
+  callback = function(args)
+    apply_explorer_keymaps(args.buf)
+  end,
+})
+
+api.nvim_create_autocmd("FileType", {
+  group = keymap_group,
+  pattern = "aihunkreview",
+  callback = function(args)
+    apply_review_keymaps(args.buf)
+  end,
+})
 
 return M
