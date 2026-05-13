@@ -84,25 +84,28 @@ local function close_layout()
   comments_sidebar.close(state)
   close_confirm_modal()
 
+  local explorer_win = state.explorer_winid
+  local review_win = state.review_winid
+  local explorer_buf = state.explorer_bufnr
+  local review_buf = state.review_bufnr
+
   if state.layout then
     pcall(function()
-      state.layout:close()
+      state.layout:close({ buf = false })
     end)
     state.layout = nil
-  else
-    if state.explorer_winid and api.nvim_win_is_valid(state.explorer_winid) then
-      pcall(api.nvim_win_close, state.explorer_winid, true)
-    end
-    if state.review_winid and api.nvim_win_is_valid(state.review_winid) then
-      pcall(api.nvim_win_close, state.review_winid, true)
+  end
+
+  for _, winid in ipairs({ explorer_win, review_win }) do
+    if winid and api.nvim_win_is_valid(winid) then
+      pcall(api.nvim_win_close, winid, true)
     end
   end
 
-  if state.explorer_bufnr and api.nvim_buf_is_valid(state.explorer_bufnr) then
-    pcall(api.nvim_buf_delete, state.explorer_bufnr, { force = true })
-  end
-  if state.review_bufnr and api.nvim_buf_is_valid(state.review_bufnr) then
-    pcall(api.nvim_buf_delete, state.review_bufnr, { force = true })
+  for _, bufnr in ipairs({ explorer_buf, review_buf }) do
+    if bufnr and api.nvim_buf_is_valid(bufnr) then
+      pcall(api.nvim_buf_delete, bufnr, { force = true })
+    end
   end
 
   state.explorer_winid = nil
