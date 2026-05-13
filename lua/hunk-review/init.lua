@@ -431,6 +431,7 @@ local function ensure_layout()
         show = false,
         fixbuf = true,
         border = "none",
+        keys = {},
         wo = {
           wrap = false,
           cursorline = true,
@@ -447,6 +448,7 @@ local function ensure_layout()
         show = false,
         fixbuf = true,
         border = "none",
+        keys = {},
         wo = {
           wrap = false,
           cursorline = false,
