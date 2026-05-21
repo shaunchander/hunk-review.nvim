@@ -11,10 +11,6 @@ local function clear_keymaps()
   keymaps = {}
 end
 
-function M.is_active()
-  return false
-end
-
 function M.close(state)
   clear_keymaps()
   pcall(api.nvim_del_augroup_by_name, "HunkReviewPeek")

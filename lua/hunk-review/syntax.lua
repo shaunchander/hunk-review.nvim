@@ -83,7 +83,7 @@ function M.apply(bufnr, line_map)
       api.nvim_buf_set_lines(tmp, 0, -1, false, content)
 
       local ok, parser = pcall(vim.treesitter.get_parser, tmp, lang)
-      if not ok then
+      if not ok or not parser then
         return
       end
 
@@ -106,8 +106,16 @@ function M.apply(bufnr, line_map)
           local review_ln = lmap[row + 1]
           if review_ln then
             local cs = (row == sr) and (sc + 5) or 5
-            local ce = (row == er) and (ec + 5) or -1
-            api.nvim_buf_add_highlight(bufnr, syntax_ns, hl, review_ln - 1, cs, ce)
+            local line_len = #(api.nvim_buf_get_lines(bufnr, review_ln - 1, review_ln, false)[1] or "")
+            local ce = (row == er) and (ec + 5) or line_len
+            if ce > line_len then ce = line_len end
+            if cs < ce then
+              api.nvim_buf_set_extmark(bufnr, syntax_ns, review_ln - 1, cs, {
+                end_col = ce,
+                hl_group = hl,
+                priority = 100,
+              })
+            end
           end
         end
       end

@@ -9,7 +9,7 @@ Coding agents and LLMs can write a lot of code fast — but someone still needs 
 - ✅ TreeSitter-powered syntax highlighting in diffs
 - ✅ peek into source files without leaving the review
 - ✅ structured JSON export for AI agents and downstream tools
-- ✅ auto-detects base branch and supports uncommitted/full diff modes
+- ✅ auto-detects base + target branches with uncommitted / target / main diff modes (stacked-PR aware)
 
 ## Getting started
 
@@ -34,7 +34,7 @@ Then, open a review session:
 
 hunk-review.nvim reads your `git diff` and renders it into a navigable, annotatable buffer. You get a file tree on the left and a unified diff view on the right — all keyboard-driven, no mouse needed.
 
-You can add comments to change blocks, toggle between uncommitted and full (merge-base) diffs, peek at source files in a floating window, and export your entire review as structured JSON.
+You can add comments to change blocks, cycle between uncommitted / target-branch / main-branch diffs, peek at source files in a floating window, and export your entire review as structured JSON.
 
 ### Explorer pane (left)
 
@@ -45,7 +45,7 @@ You can add comments to change blocks, toggle between uncommitted and full (merg
 | `<C-l>` | Focus review pane |
 | `/` | Filter files by name |
 | `x` | Clear filter |
-| `[` / `]` | Toggle diff mode (uncommitted ↔ full) |
+| `[` / `]` | Cycle diff mode (uncommitted → target → main) |
 | `C` | Toggle comments sidebar |
 | `r` | Refresh |
 | `q` | Close |
@@ -64,7 +64,7 @@ You can add comments to change blocks, toggle between uncommitted and full (merg
 | `p` | Peek source file in floating window |
 | `e` | Export JSON review payload |
 | `<C-h>` | Focus explorer pane |
-| `[` / `]` | Toggle diff mode |
+| `[` / `]` | Cycle diff mode |
 | `C` | Toggle comments sidebar |
 
 Visual mode: select a range and press `c` or `<CR>` to comment on multiple lines.
@@ -77,12 +77,20 @@ Open the comments sidebar with `C` to see all your comments organized by file. I
 
 ### Diff modes
 
-Toggle between two diff modes with `[` and `]`:
+Cycle diff modes with `[` and `]`:
 
 - **Uncommitted** — `git diff HEAD` (your working changes)
-- **Full** — `git diff $(merge-base)` (all changes from the base branch)
+- **Target** — `git diff $(merge-base <target> HEAD)` against the PR/upstream target branch. Only appears when the target branch is **not** the main base (useful for stacked PRs against a parent branch).
+- **Main** — `git diff $(merge-base <base> HEAD)` against `main`/`master`/`develop`.
 
-The base branch is auto-detected from `main`, `master`, or `develop` (configurable via `setup()`).
+The **main** base branch is auto-detected from `main`, `master`, or `develop` (configurable via `setup()`).
+
+The **target** branch is detected by trying, in order:
+
+1. `gh pr view --json baseRefName` (the actual GitHub PR base — most accurate for stacked PRs)
+2. `git rev-parse --abbrev-ref @{upstream}` (upstream tracking branch, with remote prefix stripped)
+
+If neither succeeds, or the detected target equals the main base, the Target tab is hidden.
 
 ### Reviewing agent-generated code
 
@@ -107,7 +115,7 @@ All settings are optional. Call `setup()` to override defaults:
 
 ```lua
 require("hunk-review").setup({
-  -- Branches to try when detecting merge-base for full diff mode
+  -- Branches to try when detecting merge-base for the "Main" diff mode
   base_branches = { "main", "master", "develop" },
 
   -- Floating layout dimensions (0-1 = percentage of editor)
