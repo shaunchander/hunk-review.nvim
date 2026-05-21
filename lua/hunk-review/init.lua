@@ -43,6 +43,7 @@ local state = {
   selected_file = nil,
   diff_mode = "uncommitted",
   base_branch = nil,
+  target_branch = nil,
   peek_winid = nil,
   peek_return_cursor = nil,
   collapsed_dirs = {},
@@ -53,6 +54,50 @@ local state = {
 
 local function notify(message, level)
   vim.notify(message, level or vim.log.levels.INFO, { title = "hunk-review.nvim" })
+end
+
+local function apply_highlight(bufnr, namespace, hl)
+  local line = hl.line
+  local col_start = hl.col_start or 0
+  local col_end = hl.col_end
+  local opts = { hl_group = hl.group, hl_eol = col_end == nil or col_end == -1, priority = 100 }
+  if col_end and col_end >= 0 then
+    opts.end_col = col_end
+  else
+    local line_text = api.nvim_buf_get_lines(bufnr, line, line + 1, false)[1] or ""
+    opts.end_col = #line_text
+  end
+  api.nvim_buf_set_extmark(bufnr, namespace, line, col_start, opts)
+end
+
+local function current_diff_modes()
+  local modes = { "uncommitted" }
+  local has_target = state.target_branch and not git.is_base_branch(state.target_branch)
+  if has_target then
+    table.insert(modes, "target")
+  end
+  table.insert(modes, "main")
+  return modes
+end
+
+local function tab_label(mode)
+  if mode == "uncommitted" then
+    return "Uncommitted"
+  elseif mode == "target" then
+    return state.target_branch and ("Target: " .. state.target_branch) or "Target"
+  else
+    return state.base_branch and ("Main: " .. state.base_branch) or "Main"
+  end
+end
+
+local function ensure_valid_mode()
+  local modes = current_diff_modes()
+  for _, mode in ipairs(modes) do
+    if mode == state.diff_mode then
+      return
+    end
+  end
+  state.diff_mode = "uncommitted"
 end
 
 local function get_snacks()
@@ -318,6 +363,9 @@ local function apply_explorer_keymaps(bufnr)
   map("/", function() M.filter_files() end, "Filter files")
   map("x", function() M.clear_filter() end, "Clear file filter")
   map("<C-l>", focus_review, "Focus review pane")
+  for _, lhs in ipairs({ "<C-h>", "<C-j>", "<C-k>" }) do
+    vim.keymap.set("n", lhs, "<Nop>", { buffer = bufnr, nowait = true, silent = true, desc = "Block window-leave" })
+  end
   map("C", function() comments_sidebar.toggle(state) end, "Toggle comments sidebar")
 
   vim.keymap.set("n", "[", function() M.prev_tab() end, { buffer = bufnr, silent = true, desc = "Previous diff tab" })
@@ -353,6 +401,9 @@ local function apply_review_keymaps(bufnr)
   map("e", function() M.export() end, "Export review instructions")
   map("C", function() comments_sidebar.toggle(state) end, "Toggle comments sidebar")
   map("<C-h>", focus_explorer, "Focus explorer pane")
+  for _, lhs in ipairs({ "<C-l>", "<C-j>", "<C-k>" }) do
+    vim.keymap.set("n", lhs, "<Nop>", { buffer = bufnr, nowait = true, silent = true, desc = "Block window-leave" })
+  end
 
   vim.keymap.set("n", "[", function() M.prev_tab() end, { buffer = bufnr, silent = true, desc = "Previous diff tab" })
   vim.keymap.set("n", "]", function() M.next_tab() end, { buffer = bufnr, silent = true, desc = "Next diff tab" })
@@ -529,7 +580,7 @@ local function ensure_layout()
   vim.wo[state.explorer_winid].wrap = false
   vim.wo[state.review_winid].wrap = false
   vim.wo[state.review_winid].scrolloff = 999
-  vim.api.nvim_win_set_width(state.explorer_winid, 32)
+  api.nvim_win_set_width(state.explorer_winid, 32)
   api.nvim_set_current_win(state.review_winid)
 end
 
@@ -619,8 +670,7 @@ render_explorer = function()
   local line_map = {}
   local entries = filtered_file_entries()
 
-  local mode_label = state.diff_mode == "full" and "Full Diff" or "Uncommitted"
-  table.insert(lines, "Changed Files (" .. mode_label .. ")")
+  table.insert(lines, "Changed Files (" .. tab_label(state.diff_mode) .. ")")
   table.insert(highlights, { line = #lines - 1, group = "Title" })
   local filter_label = vim.trim(state.file_filter or "")
   table.insert(lines, filter_label ~= "" and ("Filter: " .. filter_label) or "Filter: [none]  (/ to set, x to clear)")
@@ -639,9 +689,7 @@ render_explorer = function()
   api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 
   for _, item in ipairs(highlights) do
-    local col_start = item.col_start or 0
-    local col_end = item.col_end or -1
-    api.nvim_buf_add_highlight(bufnr, ns, item.group, item.line, col_start, col_end)
+    apply_highlight(bufnr, ns, item)
   end
 
   vim.bo[bufnr].modifiable = false
@@ -659,23 +707,40 @@ local function render_review()
   local highlights = {}
   local line_map = {}
 
-  local tab_uncommitted = state.diff_mode == "uncommitted" and "[Uncommitted]" or " Uncommitted "
-  local tab_full = state.diff_mode == "full" and "[Full Diff]" or " Full Diff "
-  local tab_line = " " .. tab_uncommitted .. "   " .. tab_full
+  local modes = current_diff_modes()
+  local tab_line = " "
+  local tab_spans = {}
+  for i, mode in ipairs(modes) do
+    if i > 1 then
+      tab_line = tab_line .. "   "
+    end
+    local label = tab_label(mode)
+    local rendered = state.diff_mode == mode and ("[" .. label .. "]") or (" " .. label .. " ")
+    local col_start = #tab_line
+    tab_line = tab_line .. rendered
+    table.insert(tab_spans, { mode = mode, col_start = col_start, col_end = col_start + #rendered })
+  end
   table.insert(lines, tab_line)
   local tab_row = #lines - 1
-  local u_start = 1
-  local u_end = u_start + #tab_uncommitted
-  local f_start = u_end + 3
-  local f_end = f_start + #tab_full
-  table.insert(highlights, { line = tab_row, col_start = u_start, col_end = u_end, group = state.diff_mode == "uncommitted" and "Title" or "Comment" })
-  table.insert(highlights, { line = tab_row, col_start = f_start, col_end = f_end, group = state.diff_mode == "full" and "Title" or "Comment" })
+  for _, span in ipairs(tab_spans) do
+    table.insert(highlights, {
+      line = tab_row,
+      col_start = span.col_start,
+      col_end = span.col_end,
+      group = state.diff_mode == span.mode and "Title" or "Comment",
+    })
+  end
   table.insert(lines, "")
 
   if #state.hunks == 0 then
-    local empty_msg = state.diff_mode == "full"
-      and "No hunks found in merge-base diff."
-      or "No hunks found in git diff HEAD."
+    local empty_msg
+    if state.diff_mode == "uncommitted" then
+      empty_msg = "No hunks found in git diff HEAD."
+    elseif state.diff_mode == "target" then
+      empty_msg = "No hunks found in target branch diff."
+    else
+      empty_msg = "No hunks found in main branch diff."
+    end
     table.insert(lines, empty_msg)
     table.insert(lines, "")
     table.insert(lines, "Press r to refresh, [ ] to switch tabs.")
@@ -827,9 +892,7 @@ local function render_review()
   api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 
   for _, item in ipairs(highlights) do
-    local col_start = item.col_start or 0
-    local col_end = item.col_end or -1
-    api.nvim_buf_add_highlight(bufnr, ns, item.group, item.line, col_start, col_end)
+    apply_highlight(bufnr, ns, item)
   end
 
   vim.bo[bufnr].modifiable = false
@@ -859,7 +922,12 @@ local function set_state_from_diff(diff_state)
   state.repo_root = diff_state.repo_root
   state.cwd = diff_state.cwd
   state.hunks = diff_state.hunks
-  state.base_branch = diff_state.base_branch or state.base_branch
+  if diff_state.base_branch ~= nil then
+    state.base_branch = diff_state.base_branch
+  end
+  if diff_state.target_branch ~= nil then
+    state.target_branch = diff_state.target_branch
+  end
 
   if repo_changed then
     state.comments = {}
@@ -872,21 +940,30 @@ end
 -- Public API
 
 function M.refresh()
-  local diff_state, err = git.load_hunks(state.diff_mode, state.base_branch, { context = config.diff_context })
+  local current_root = git.git_root()
+  if current_root and state.repo_root and current_root ~= state.repo_root then
+    state.base_branch = nil
+    state.target_branch = nil
+  end
+
+  local diff_state, err = git.load_hunks(state.diff_mode, {
+    base_branch = state.base_branch,
+    target_branch = state.target_branch,
+  }, { context = config.diff_context })
   if not diff_state then
     notify(err or "Failed to load Git hunks", vim.log.levels.ERROR)
     return
   end
 
   set_state_from_diff(diff_state)
+  ensure_valid_mode()
   render()
 end
 
-local diff_modes = { "uncommitted", "full" }
-
 local function toggle_diff_mode(direction)
+  local modes = current_diff_modes()
   local current = 1
-  for i, mode in ipairs(diff_modes) do
+  for i, mode in ipairs(modes) do
     if mode == state.diff_mode then
       current = i
       break
@@ -895,12 +972,12 @@ local function toggle_diff_mode(direction)
 
   current = current + direction
   if current < 1 then
-    current = #diff_modes
-  elseif current > #diff_modes then
+    current = #modes
+  elseif current > #modes then
     current = 1
   end
 
-  state.diff_mode = diff_modes[current]
+  state.diff_mode = modes[current]
   M.refresh()
 end
 
@@ -1137,7 +1214,7 @@ function M.add_range_comment()
 
   local v_start = vim.fn.getpos("v")[2]
   local v_end = vim.fn.getpos(".")[2]
-  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+  api.nvim_feedkeys(api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
 
   if v_start > v_end then
     v_start, v_end = v_end, v_start
@@ -1236,7 +1313,10 @@ end
 
 function M.export()
   if not state.repo_root then
-    local diff_state, err = git.load_hunks(state.diff_mode, state.base_branch, { context = config.diff_context })
+    local diff_state, err = git.load_hunks(state.diff_mode, {
+      base_branch = state.base_branch,
+      target_branch = state.target_branch,
+    }, { context = config.diff_context })
     if not diff_state then
       notify(err or "Failed to load Git hunks", vim.log.levels.ERROR)
       return

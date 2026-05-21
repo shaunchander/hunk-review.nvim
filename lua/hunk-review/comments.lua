@@ -154,7 +154,16 @@ function M.open(state)
 
   api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   for _, hl in ipairs(highlights) do
-    api.nvim_buf_add_highlight(bufnr, ns, hl.group, hl.line, hl.col_start or 0, hl.col_end or -1)
+    local col_start = hl.col_start or 0
+    local col_end = hl.col_end
+    local opts = { hl_group = hl.group, priority = 100 }
+    if col_end and col_end >= 0 then
+      opts.end_col = col_end
+    else
+      local line_text = api.nvim_buf_get_lines(bufnr, hl.line, hl.line + 1, false)[1] or ""
+      opts.end_col = #line_text
+    end
+    api.nvim_buf_set_extmark(bufnr, ns, hl.line, col_start, opts)
   end
   vim.bo[bufnr].modifiable = false
 
