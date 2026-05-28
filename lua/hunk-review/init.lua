@@ -57,6 +57,13 @@ local function notify(message, level)
   vim.notify(message, level or vim.log.levels.INFO, { title = "hunk-review.nvim" })
 end
 
+local function setup_highlights()
+  -- Create subtle background tints for diff content
+  vim.api.nvim_set_hl(0, "HunkReviewDiffBg", { bg = "#1a1a1a", default = true })
+  vim.api.nvim_set_hl(0, "HunkReviewAddBg", { bg = "#1a2e1a", default = true })
+  vim.api.nvim_set_hl(0, "HunkReviewDeleteBg", { bg = "#2e1a1a", default = true })
+end
+
 local function apply_highlight(bufnr, namespace, hl)
   local line = hl.line
   local col_start = hl.col_start or 0
@@ -391,8 +398,8 @@ local function apply_review_keymaps(bufnr)
     if state.line_mode then exit_line_mode() end
   end, "Exit line-by-line mode")
   map("<CR>", function()
-    if state.line_mode then M.add_line_comment() else M.confirm_review() end
-  end, "Confirm review / Line comment")
+    M.confirm_review()
+  end, "Confirm review")
   map("o", function() M.jump_to_source() end, "Open source")
   map("p", function() peek.open(state, current_hunk_at_cursor()) end, "Peek source with LSP")
   map("c", function()
@@ -502,7 +509,7 @@ local function ensure_layout()
         border = "none",
         keys = { q = false },
         wo = {
-          wrap = false,
+          wrap = true,
           cursorline = false,
           signcolumn = "no",
           number = false,
@@ -567,7 +574,7 @@ local function ensure_layout()
     api.nvim_win_set_buf(state.explorer_winid, explorer_bufnr)
     api.nvim_win_set_buf(state.review_winid, review_bufnr)
     vim.wo[state.explorer_winid].wrap = false
-    vim.wo[state.review_winid].wrap = false
+    vim.wo[state.review_winid].wrap = true
     vim.wo[state.review_winid].scrolloff = 999
     return
   end
@@ -579,7 +586,7 @@ local function ensure_layout()
   state.review_winid = api.nvim_get_current_win()
   api.nvim_win_set_buf(state.review_winid, review_bufnr)
   vim.wo[state.explorer_winid].wrap = false
-  vim.wo[state.review_winid].wrap = false
+  vim.wo[state.review_winid].wrap = true
   vim.wo[state.review_winid].scrolloff = 999
   api.nvim_win_set_width(state.explorer_winid, 32)
   api.nvim_set_current_win(state.review_winid)
@@ -650,7 +657,7 @@ local function open_confirm_modal()
   local function confirm()
     copy_review_to_clipboard()
     close_confirm_modal()
-    focus_review()
+    close_layout()
   end
 
   vim.keymap.set("n", "y", confirm, { buffer = bufnr, silent = true, desc = "Confirm review copy" })
@@ -829,6 +836,15 @@ local function render_review()
           group = "Special"
         end
 
+        -- Apply background highlighting for diff content
+        local bg_group = "HunkReviewDiffBg"
+        if prefix == "+" then
+          bg_group = "HunkReviewAddBg"
+        elseif prefix == "-" then
+          bg_group = "HunkReviewDeleteBg"
+        end
+
+        table.insert(highlights, { line = #lines - 1, group = bg_group, col_start = 0, col_end = -1 })
         table.insert(highlights, { line = #lines - 1, group = group })
         line_map[#lines] = {
           kind = "diff_line",
@@ -1398,6 +1414,10 @@ api.nvim_create_autocmd("FileType", {
 function M.setup(opts)
   config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts or {})
   git.set_base_branches(config.base_branches)
+  setup_highlights()
 end
+
+-- Set up highlights on module load
+setup_highlights()
 
 return M

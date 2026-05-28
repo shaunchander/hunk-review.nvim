@@ -61,9 +61,9 @@ You can add comments to change blocks, cycle between uncommitted / target-branch
 | `j` / `k` | Jump to next/previous change block |
 | `]h` / `[h` | Jump to next/previous hunk header |
 | `<Space>` | Toggle line-by-line mode |
-| `c` | Add/edit comment on change block |
+| `c` | Add/edit comment on change block or line |
 | `d` | Delete comment on current block |
-| `<CR>` | Comment on line (in line mode) or copy review to clipboard |
+| `<CR>` | Copy review to clipboard (in visual mode: comment on selected lines) |
 | `o` | Jump to source file at current line |
 | `p` | Peek source file in floating window |
 | `e` | Export JSON review payload |
@@ -75,7 +75,7 @@ Visual mode: select a range and press `c` or `<CR>` to comment on multiple lines
 
 ### Commenting
 
-Add comments to any change block with `c`, or toggle line mode with `<Space>` and comment on individual lines with `<CR>`. Comments persist for the session and are included in exports.
+Add comments to any change block with `c`, or toggle line mode with `<Space>` and comment on individual lines with `c`. Comments persist for the session and are included in exports.
 
 Open the comments sidebar with `C` to see all your comments organized by file. In the sidebar, press `j`/`k` to jump between comments, `<CR>` to jump to the comment's location in the diff, and `d` to delete a comment.
 

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(luac -p lua/ai-hunk-review/peek.lua)",
+      "Bash(luac -p lua/ai-hunk-review/init.lua)",
+      "Bash(mv /Users/shaun/Desktop/lab/hunk-review/lua/ai-hunk-review /Users/shaun/Desktop/lab/hunk-review/lua/hunk-review)",
+      "Bash(mv /Users/shaun/Desktop/lab/hunk-review/plugin/ai-hunk-review.lua /Users/shaun/Desktop/lab/hunk-review/plugin/hunk-review.lua)",
+      "Bash(git commit *)"
+    ]
+  }
+}
