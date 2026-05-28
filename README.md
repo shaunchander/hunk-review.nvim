@@ -17,7 +17,11 @@ Install with [lazy.nvim](https://github.com/folke/lazy.nvim):
 ```lua
 {
   "shaunchander/hunk-review.nvim",
-  opts = {},
+  opts = {
+    -- Optional: prepend a system prompt to the clipboard export so you can
+    -- paste directly into an LLM without writing instructions each time.
+    -- custom_prompt = "Review these diffs and comments. Suggest targeted fixes only where a comment requests action.",
+  },
 }
 ```
 
@@ -127,6 +131,11 @@ require("hunk-review").setup({
 
   -- Number of context lines in git diff
   diff_context = 3,
+
+  -- Prepend a custom prompt to the clipboard export (<CR> outside line mode).
+  -- Useful for pasting directly into an LLM with pre-defined instructions.
+  -- When nil (default), only the diff and comments are copied.
+  custom_prompt = nil,
 })
 ```
 

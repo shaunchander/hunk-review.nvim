@@ -20,6 +20,7 @@ local defaults = {
     explorer_width = 0.28,
   },
   diff_context = 3,
+  custom_prompt = nil,
 }
 
 local config = vim.deepcopy(defaults)
@@ -587,7 +588,7 @@ end
 -- Clipboard / confirm modal
 
 local function copy_review_to_clipboard()
-  local text = export.clipboard_text(state.hunks, state.comments)
+  local text = export.clipboard_text(state.hunks, state.comments, config.custom_prompt)
   if not text then
     notify("No commented blocks to copy", vim.log.levels.WARN)
     return

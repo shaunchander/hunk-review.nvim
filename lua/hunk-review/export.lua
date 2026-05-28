@@ -86,8 +86,13 @@ function M.payload(hunks, comments, repo_root)
   }
 end
 
-function M.clipboard_text(hunks, comments)
+function M.clipboard_text(hunks, comments, custom_prompt)
   local sections = {}
+
+  if custom_prompt and custom_prompt ~= "" then
+    table.insert(sections, custom_prompt)
+    table.insert(sections, "")
+  end
 
   for _, hunk in ipairs(hunks) do
     local commented_blocks = {}
