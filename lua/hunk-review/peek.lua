@@ -15,15 +15,18 @@ function M.close(state)
   clear_keymaps()
   pcall(api.nvim_del_augroup_by_name, "HunkReviewPeek")
 
-  if state.peek_winid and api.nvim_win_is_valid(state.peek_winid) then
-    pcall(api.nvim_win_close, state.peek_winid, true)
-  end
-  state.peek_winid = nil
+  -- Restore review buffer to the review window
+  if state.review_winid and api.nvim_win_is_valid(state.review_winid) then
+    if state.review_bufnr and api.nvim_buf_is_valid(state.review_bufnr) then
+      api.nvim_win_set_buf(state.review_winid, state.review_bufnr)
+    end
 
-  if state.peek_return_cursor and state.review_winid and api.nvim_win_is_valid(state.review_winid) then
-    api.nvim_set_current_win(state.review_winid)
-    pcall(api.nvim_win_set_cursor, state.review_winid, state.peek_return_cursor)
+    if state.peek_return_cursor then
+      api.nvim_set_current_win(state.review_winid)
+      pcall(api.nvim_win_set_cursor, state.review_winid, state.peek_return_cursor)
+    end
   end
+
   state.peek_return_cursor = nil
 end
 
@@ -34,75 +37,47 @@ function M.open(state, hunk, item)
     return
   end
 
-  if state.review_winid and api.nvim_win_is_valid(state.review_winid) then
-    state.peek_return_cursor = api.nvim_win_get_cursor(state.review_winid)
+  if not state.review_winid or not api.nvim_win_is_valid(state.review_winid) then
+    return
   end
+
+  if not state.review_bufnr or not api.nvim_buf_is_valid(state.review_bufnr) then
+    return
+  end
+
+  -- Save cursor position to return to
+  state.peek_return_cursor = api.nvim_win_get_cursor(state.review_winid)
 
   local target = state.repo_root .. "/" .. hunk.file_path
 
-  local width, height, row, col
-  if state.review_winid and api.nvim_win_is_valid(state.review_winid) then
-    local pos = api.nvim_win_get_position(state.review_winid)
-    width = api.nvim_win_get_width(state.review_winid)
-    height = api.nvim_win_get_height(state.review_winid)
-    row = pos[1]
-    col = pos[2]
-  else
-    width = math.floor(vim.o.columns * 0.68)
-    height = math.floor(vim.o.lines * 0.92)
-    row = math.floor((vim.o.lines - height) / 2)
-    col = vim.o.columns - width - 2
-  end
-
+  -- Load the buffer
   local bufnr = vim.fn.bufadd(target)
   vim.fn.bufload(bufnr)
 
-  local winid = api.nvim_open_win(bufnr, true, {
-    relative = "editor",
-    border = "rounded",
-    title = " Peek: " .. hunk.file_path .. " (q to close) ",
-    title_pos = "center",
-    width = math.max(width - 2, 1),
-    height = math.max(height - 2, 1),
-    row = row,
-    col = col,
-    zindex = 60,
-  })
-  state.peek_winid = winid
+  -- Replace the review window buffer with the source file
+  api.nvim_set_current_win(state.review_winid)
+  api.nvim_win_set_buf(state.review_winid, bufnr)
 
-  vim.wo[winid].number = true
-  vim.wo[winid].relativenumber = true
-  vim.wo[winid].cursorline = true
-  vim.wo[winid].signcolumn = "yes"
-  vim.wo[winid].wrap = false
+  -- Configure window options for a better peek experience
+  vim.wo[state.review_winid].number = true
+  vim.wo[state.review_winid].relativenumber = true
+  vim.wo[state.review_winid].cursorline = true
+  vim.wo[state.review_winid].signcolumn = "yes"
+  vim.wo[state.review_winid].wrap = false
 
-  pcall(api.nvim_win_set_cursor, winid, { item.source_line or 1, 0 })
+  -- Jump to the relevant line
+  pcall(api.nvim_win_set_cursor, state.review_winid, { item.source_line or 1, 0 })
   vim.cmd("normal! zz")
 
+  -- Set up keymaps for closing peek (returns to review buffer)
   local function close() M.close(state) end
 
-  vim.keymap.set("n", "q", close, { buffer = bufnr, nowait = true, silent = true, desc = "Close peek" })
-  vim.keymap.set("n", "<Esc>", close, { buffer = bufnr, nowait = true, silent = true, desc = "Close peek" })
+  vim.keymap.set("n", "q", close, { buffer = bufnr, nowait = true, silent = true, desc = "Return to diff view (hunk-review)" })
+  vim.keymap.set("n", "<Esc>", close, { buffer = bufnr, nowait = true, silent = true, desc = "Return to diff view (hunk-review)" })
   keymaps = {
     { lhs = "q", buf = bufnr },
     { lhs = "<Esc>", buf = bufnr },
   }
-
-  local group = api.nvim_create_augroup("HunkReviewPeek", { clear = true })
-  api.nvim_create_autocmd("WinClosed", {
-    group = group,
-    pattern = tostring(winid),
-    once = true,
-    callback = function()
-      clear_keymaps()
-      state.peek_winid = nil
-      if state.peek_return_cursor and state.review_winid and api.nvim_win_is_valid(state.review_winid) then
-        api.nvim_set_current_win(state.review_winid)
-        pcall(api.nvim_win_set_cursor, state.review_winid, state.peek_return_cursor)
-      end
-      state.peek_return_cursor = nil
-    end,
-  })
 end
 
 return M

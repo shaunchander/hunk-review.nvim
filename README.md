@@ -4,10 +4,10 @@
 
 Coding agents and LLMs can write a lot of code fast — but someone still needs to review it. hunk-review.nvim gives you a focused, distraction-free environment to walk through every change, annotate what needs fixing, and export structured feedback that agents can act on. No context-switching to a browser, no PR UI overhead. Just you, the diff, and your keyboard.
 
-- ✅ two-pane review UI with file explorer + diff viewer
+- ✅ tab-based review UI with file explorer + diff viewer (your leader shortcuts work normally!)
 - ✅ inline commenting on change blocks, individual lines, or ranges
 - ✅ TreeSitter-powered syntax highlighting in diffs
-- ✅ peek into source files without leaving the review
+- ✅ peek into source files with full LSP support (go-to-definition, hover, diagnostics)
 - ✅ structured JSON export for AI agents and downstream tools
 - ✅ auto-detects base + target branches with uncommitted / target / main diff modes (stacked-PR aware)
 
@@ -17,6 +17,7 @@ Install with [lazy.nvim](https://github.com/folke/lazy.nvim):
 ```lua
 {
   "shaunchander/hunk-review.nvim",
+  dependencies = { "folke/snacks.nvim" },
   opts = {
     -- Optional: prepend a system prompt to the clipboard export so you can
     -- paste directly into an LLM without writing instructions each time.
@@ -65,7 +66,7 @@ You can add comments to change blocks, cycle between uncommitted / target-branch
 | `d` | Delete comment on current block |
 | `<CR>` | Copy review to clipboard (in visual mode: comment on selected lines) |
 | `o` | Jump to source file at current line |
-| `p` | Peek source file in floating window |
+| `p` | Peek source file (replaces diff view, press `q` to return) |
 | `e` | Export JSON review payload |
 | `<C-h>` | Focus explorer pane |
 | `[` / `]` | Cycle diff mode |
@@ -77,7 +78,11 @@ Visual mode: select a range and press `c` or `<CR>` to comment on multiple lines
 
 Add comments to any change block with `c`, or toggle line mode with `<Space>` and comment on individual lines with `c`. Comments persist for the session and are included in exports.
 
-Open the comments sidebar with `C` to see all your comments organized by file. In the sidebar, press `j`/`k` to jump between comments, `<CR>` to jump to the comment's location in the diff, and `d` to delete a comment.
+Open the comments picker with `C` to see all your comments organized by file. In the picker:
+- Type to fuzzy search comments
+- `<CR>` to jump to the comment's location in the diff
+- `<C-d>` to delete a comment
+- Standard snacks.nvim picker navigation
 
 ### Diff modes
 
@@ -156,7 +161,3 @@ Open a buffer with the structured JSON export.
 
 ### `:HunkReviewReset`
 Clear all comments and reset review state.
-
-## Optional dependency
-
-[snacks.nvim](https://github.com/folke/snacks.nvim) — for an enhanced floating modal layout. Without it, hunk-review falls back to standard Neovim splits.

@@ -45,12 +45,12 @@ local state = {
   diff_mode = "uncommitted",
   base_branch = nil,
   target_branch = nil,
-  peek_winid = nil,
   peek_return_cursor = nil,
   collapsed_dirs = {},
   line_mode = false,
-  comments_winid = nil,
   comments_sidebar_open = false,
+  original_tabnr = nil,
+  review_tabnr = nil,
 }
 
 local function notify(message, level)
@@ -108,14 +108,6 @@ local function ensure_valid_mode()
   state.diff_mode = "uncommitted"
 end
 
-local function get_snacks()
-  local ok, snacks = pcall(require, "snacks")
-  if ok then
-    return snacks
-  end
-  return nil
-end
-
 -- Forward declarations for mutual references
 local render_explorer
 local render
@@ -137,24 +129,41 @@ local function close_layout()
   comments_sidebar.close(state)
   close_confirm_modal()
 
-  local explorer_win = state.explorer_winid
-  local review_win = state.review_winid
   local explorer_buf = state.explorer_bufnr
   local review_buf = state.review_bufnr
+  local review_tabnr = state.review_tabnr
+  local original_tabnr = state.original_tabnr
 
-  if state.layout then
-    pcall(function()
-      state.layout:close({ buf = false })
-    end)
-    state.layout = nil
-  end
+  -- Close the review tab if it exists
+  if review_tabnr and api.nvim_tabpage_is_valid(review_tabnr) then
+    local current_tab = api.nvim_get_current_tabpage()
 
-  for _, winid in ipairs({ explorer_win, review_win }) do
-    if winid and api.nvim_win_is_valid(winid) then
-      pcall(api.nvim_win_close, winid, true)
+    -- Only switch tabs if we're currently in the review tab
+    if current_tab == review_tabnr then
+      -- Try to return to original tab, but handle case where it was closed
+      if original_tabnr and api.nvim_tabpage_is_valid(original_tabnr) then
+        pcall(api.nvim_set_current_tabpage, original_tabnr)
+      else
+        -- Original tab is gone, tabclose will auto-switch to adjacent tab
+        vim.cmd("tabclose " .. api.nvim_tabpage_get_number(review_tabnr))
+        -- Early return since tabclose already cleaned up
+        state.explorer_winid = nil
+        state.review_winid = nil
+        state.explorer_bufnr = nil
+        state.review_bufnr = nil
+        state.review_tabnr = nil
+        state.original_tabnr = nil
+        state.line_mode = false
+        syntax.clear_cache()
+        return
+      end
     end
+
+    -- Close the review tab using tabclose (cleaner than manual window closing)
+    vim.cmd("tabclose " .. api.nvim_tabpage_get_number(review_tabnr))
   end
 
+  -- Delete the buffers
   for _, bufnr in ipairs({ explorer_buf, review_buf }) do
     if bufnr and api.nvim_buf_is_valid(bufnr) then
       pcall(api.nvim_buf_delete, bufnr, { force = true })
@@ -165,6 +174,8 @@ local function close_layout()
   state.review_winid = nil
   state.explorer_bufnr = nil
   state.review_bufnr = nil
+  state.review_tabnr = nil
+  state.original_tabnr = nil
   state.line_mode = false
   syntax.clear_cache()
 end
@@ -477,118 +488,71 @@ end
 local function ensure_layout()
   local explorer_bufnr = ensure_explorer_buffer()
   local review_bufnr = ensure_review_buffer()
-  local snacks = get_snacks()
 
-  if snacks and snacks.layout and snacks.win then
-    if state.layout and state.layout.valid and state.layout:valid() then
-      state.layout:show()
-      state.layout:update()
+  -- If layout already exists in the review tab, validate and reuse or recreate
+  if state.review_tabnr and api.nvim_tabpage_is_valid(state.review_tabnr) then
+    local wins = api.nvim_tabpage_list_wins(state.review_tabnr)
+
+    -- Validate layout integrity: should have exactly 2 windows and both window IDs valid
+    local valid_layout = #wins == 2
+      and state.explorer_winid and api.nvim_win_is_valid(state.explorer_winid)
+      and state.review_winid and api.nvim_win_is_valid(state.review_winid)
+
+    if valid_layout then
+      -- Reuse existing valid layout
+      api.nvim_set_current_tabpage(state.review_tabnr)
+      api.nvim_win_set_buf(state.explorer_winid, explorer_bufnr)
+      api.nvim_win_set_buf(state.review_winid, review_bufnr)
+      api.nvim_set_current_win(state.review_winid)
+      return
     else
-      local explorer = snacks.win({
-        buf = explorer_bufnr,
-        enter = false,
-        show = false,
-        fixbuf = true,
-        border = "none",
-        keys = { q = false },
-        wo = {
-          wrap = false,
-          cursorline = true,
-          signcolumn = "no",
-          number = false,
-          relativenumber = false,
-          statuscolumn = "",
-        },
-      })
-
-      local review = snacks.win({
-        buf = review_bufnr,
-        enter = true,
-        show = false,
-        fixbuf = true,
-        border = "none",
-        keys = { q = false },
-        wo = {
-          wrap = true,
-          cursorline = false,
-          signcolumn = "no",
-          number = false,
-          relativenumber = false,
-          statuscolumn = "",
-          scrolloff = 999,
-        },
-      })
-
-      state.layout = snacks.layout.new({
-        show = false,
-        wins = {
-          explorer = explorer,
-          review = review,
-        },
-        layout = {
-          box = "horizontal",
-          relative = "editor",
-          position = "float",
-          border = "rounded",
-          title = " Hunk Review ",
-          title_pos = "center",
-          backdrop = 60,
-          width = config.layout.width,
-          height = config.layout.height,
-          zindex = 50,
-          {
-            win = "explorer",
-            width = config.layout.explorer_width,
-            border = "right",
-            title = " Files ",
-            title_pos = "center",
-          },
-          {
-            win = "review",
-            title = " Review ",
-            title_pos = "center",
-          },
-        },
-        on_close = function()
-          state.layout = nil
-          state.explorer_winid = nil
-          state.review_winid = nil
-        end,
-      })
-      state.layout:show()
-      state.layout:update()
+      -- Layout is corrupted (user closed windows or added splits), recreate it
+      vim.cmd("tabclose " .. api.nvim_tabpage_get_number(state.review_tabnr))
+      state.review_tabnr = nil
+      state.explorer_winid = nil
+      state.review_winid = nil
+      -- Fall through to create new layout
     end
-
-    state.explorer_winid = state.layout.wins.explorer.win
-    state.review_winid = state.layout.wins.review.win
-    api.nvim_win_set_buf(state.explorer_winid, explorer_bufnr)
-    api.nvim_win_set_buf(state.review_winid, review_bufnr)
-    api.nvim_set_current_win(state.review_winid)
-    return
   end
 
-  -- Fallback: split layout without snacks
-  if state.explorer_winid and api.nvim_win_is_valid(state.explorer_winid)
-    and state.review_winid and api.nvim_win_is_valid(state.review_winid)
-  then
-    api.nvim_win_set_buf(state.explorer_winid, explorer_bufnr)
-    api.nvim_win_set_buf(state.review_winid, review_bufnr)
-    vim.wo[state.explorer_winid].wrap = false
-    vim.wo[state.review_winid].wrap = true
-    vim.wo[state.review_winid].scrolloff = 999
-    return
+  -- Store the current tab to return to when closing
+  if not state.original_tabnr then
+    state.original_tabnr = api.nvim_get_current_tabpage()
   end
 
-  local origin_winid = api.nvim_get_current_win()
-  api.nvim_win_set_buf(origin_winid, explorer_bufnr)
-  state.explorer_winid = origin_winid
+  -- Create a new tab for the review
+  vim.cmd("tabnew")
+  state.review_tabnr = api.nvim_get_current_tabpage()
+
+  -- Set up the explorer window on the left
+  local win = api.nvim_get_current_win()
+  api.nvim_win_set_buf(win, explorer_bufnr)
+  state.explorer_winid = win
+  vim.wo[win].wrap = false
+  vim.wo[win].cursorline = true
+  vim.wo[win].signcolumn = "no"
+  vim.wo[win].number = false
+  vim.wo[win].relativenumber = false
+  vim.wo[win].statuscolumn = ""
+
+  -- Create the review window on the right
   vim.cmd("rightbelow vsplit")
   state.review_winid = api.nvim_get_current_win()
   api.nvim_win_set_buf(state.review_winid, review_bufnr)
-  vim.wo[state.explorer_winid].wrap = false
   vim.wo[state.review_winid].wrap = true
+  vim.wo[state.review_winid].cursorline = false
+  vim.wo[state.review_winid].signcolumn = "no"
+  vim.wo[state.review_winid].number = false
+  vim.wo[state.review_winid].relativenumber = false
+  vim.wo[state.review_winid].statuscolumn = ""
   vim.wo[state.review_winid].scrolloff = 999
-  api.nvim_win_set_width(state.explorer_winid, 32)
+
+  -- Calculate explorer width based on config
+  local total_width = vim.o.columns
+  local explorer_width = math.floor(total_width * config.layout.explorer_width)
+  api.nvim_win_set_width(state.explorer_winid, math.max(explorer_width, 20))
+
+  -- Focus the review pane
   api.nvim_set_current_win(state.review_winid)
 end
 

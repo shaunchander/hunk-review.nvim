@@ -19,9 +19,9 @@ function M.check()
 
   local snacks_ok = pcall(require, "snacks")
   if snacks_ok then
-    vim.health.ok("snacks.nvim is available (floating layout enabled)")
+    vim.health.ok("snacks.nvim is available (required for comments picker)")
   else
-    vim.health.info("snacks.nvim not found (using split layout fallback)")
+    vim.health.error("snacks.nvim not found (required dependency)")
   end
 
   local parsers_ok, parsers = pcall(require, "nvim-treesitter.parsers")
