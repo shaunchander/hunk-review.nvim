@@ -513,6 +513,11 @@ local function ensure_layout()
       state.review_winid = nil
       -- Fall through to create new layout
     end
+  else
+    -- Tab doesn't exist or is invalid, clear stale window/tab state
+    state.review_tabnr = nil
+    state.explorer_winid = nil
+    state.review_winid = nil
   end
 
   -- Store the current tab to return to when closing

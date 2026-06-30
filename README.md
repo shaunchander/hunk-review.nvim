@@ -161,3 +161,35 @@ Open a buffer with the structured JSON export.
 
 ### `:HunkReviewReset`
 Clear all comments and reset review state.
+
+## 🧪 Testing
+
+hunk-review.nvim includes a comprehensive test suite to prevent regressions and ensure reliability.
+
+### Running Tests
+
+```bash
+# Run all tests
+make test
+
+# Run a specific test file
+make test-file FILE=tests/diff_spec.lua
+
+# Run tests interactively in Neovim
+make test-interactive
+```
+
+### Test Coverage
+
+The test suite covers:
+- **Git operations**: Branch detection, diff loading, hunk parsing
+- **Diff parsing**: Change block detection, comment key generation
+- **Plugin functionality**: Commands, navigation, commenting, export
+- **UI rendering**: File tree, highlights, buffer management
+- **Health checks**: Dependency verification
+
+See [tests/README.md](tests/README.md) for detailed testing documentation.
+
+### Continuous Integration
+
+Tests run automatically on every push and pull request via GitHub Actions, testing against both stable and nightly Neovim versions.

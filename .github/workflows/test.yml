@@ -1,0 +1,66 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        nvim-version:
+          - stable
+          - nightly
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.nvim-version }}
+
+      - name: Install plenary.nvim
+        run: |
+          mkdir -p ~/.local/share/nvim/lazy/plenary.nvim
+          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim.git \
+            ~/.local/share/nvim/lazy/plenary.nvim
+
+      - name: Install snacks.nvim
+        run: |
+          mkdir -p ~/.local/share/nvim/lazy/snacks.nvim
+          git clone --depth 1 https://github.com/folke/snacks.nvim.git \
+            ~/.local/share/nvim/lazy/snacks.nvim
+
+      - name: Run tests
+        run: |
+          nvim --version
+          nvim --headless -u tests/minimal_init.lua \
+            -c "PlenaryBustedDirectory tests/ { minimal_init = 'tests/minimal_init.lua' }" || exit 1
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Lua
+        uses: leafo/gh-actions-lua@v10
+        with:
+          luaVersion: "5.1"
+
+      - name: Install LuaRocks
+        uses: leafo/gh-actions-luarocks@v4
+
+      - name: Install luacheck
+        run: luarocks install luacheck
+
+      - name: Run luacheck
+        run: luacheck lua/ plugin/ --globals vim

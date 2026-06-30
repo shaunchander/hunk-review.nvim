@@ -129,6 +129,11 @@ function M.get_range_comments_for_hunk(hunk, comments)
     end
   end
 
+  -- Sort by start index for consistent ordering
+  table.sort(results, function(a, b)
+    return a.start_idx < b.start_idx
+  end)
+
   return results
 end
 
