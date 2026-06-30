@@ -520,13 +520,18 @@ local function ensure_layout()
     state.original_tabnr = api.nvim_get_current_tabpage()
   end
 
-  -- Create a new tab for the review
+  -- Create a new tab for the review with the explorer buffer directly
   vim.cmd("tabnew")
   state.review_tabnr = api.nvim_get_current_tabpage()
 
-  -- Set up the explorer window on the left
+  -- Get the window and set explorer buffer (this replaces the default scratch buffer)
   local win = api.nvim_get_current_win()
+  local temp_buf = api.nvim_win_get_buf(win)
   api.nvim_win_set_buf(win, explorer_bufnr)
+  -- Delete the orphaned scratch buffer created by tabnew
+  if api.nvim_buf_is_valid(temp_buf) and temp_buf ~= explorer_bufnr then
+    api.nvim_buf_delete(temp_buf, { force = true })
+  end
   state.explorer_winid = win
   vim.wo[win].wrap = false
   vim.wo[win].cursorline = true
@@ -538,7 +543,12 @@ local function ensure_layout()
   -- Create the review window on the right
   vim.cmd("rightbelow vsplit")
   state.review_winid = api.nvim_get_current_win()
+  local temp_buf2 = api.nvim_win_get_buf(state.review_winid)
   api.nvim_win_set_buf(state.review_winid, review_bufnr)
+  -- Delete the orphaned scratch buffer created by vsplit
+  if api.nvim_buf_is_valid(temp_buf2) and temp_buf2 ~= review_bufnr then
+    api.nvim_buf_delete(temp_buf2, { force = true })
+  end
   vim.wo[state.review_winid].wrap = true
   vim.wo[state.review_winid].cursorline = false
   vim.wo[state.review_winid].signcolumn = "no"
@@ -910,6 +920,7 @@ local function set_state_from_diff(diff_state)
     state.target_branch = diff_state.target_branch
   end
 
+  -- Clear session-specific state only when switching repositories
   if repo_changed then
     state.comments = {}
     state.collapsed_dirs = {}

@@ -44,37 +44,59 @@ function M.payload(hunks, comments, repo_root)
   local items = {}
 
   for _, hunk in ipairs(hunks) do
-    local changes = {}
+    -- Check if this hunk has any comments (block or range)
+    local has_comments = false
 
+    -- Check block comments
     for _, block in ipairs(diff.get_change_blocks(hunk)) do
-      table.insert(changes, {
-        diff_start = block.start,
-        diff_end = block["end"],
-        kind = block.kind,
-        line = diff.source_line_for_hunk_offset(hunk, block.start),
-        lines = block.lines,
-        comment = comments[block.id] or "",
-      })
+      if comments[block.id] and comments[block.id] ~= "" then
+        has_comments = true
+        break
+      end
     end
 
-    local range_comments = {}
-    for _, rc in ipairs(diff.get_range_comments_for_hunk(hunk, comments)) do
-      table.insert(range_comments, {
-        diff_start = rc.start_idx,
-        diff_end = rc.end_idx,
-        line = diff.source_line_for_hunk_offset(hunk, rc.start_idx),
-        comment = rc.comment,
-      })
+    -- Check range comments (if no block comments found)
+    if not has_comments then
+      for _, rc in ipairs(diff.get_range_comments_for_hunk(hunk, comments)) do
+        has_comments = true
+        break
+      end
     end
 
-    table.insert(items, {
-      file = hunk.file_path,
-      header = hunk.header,
-      line = hunk.parsed and hunk.parsed.new_start or 1,
-      diff = hunk.lines,
-      changes = changes,
-      range_comments = #range_comments > 0 and range_comments or nil,
-    })
+    -- Only process this hunk if it has comments
+    if has_comments then
+      local changes = {}
+
+      for _, block in ipairs(diff.get_change_blocks(hunk)) do
+        table.insert(changes, {
+          diff_start = block.start,
+          diff_end = block["end"],
+          kind = block.kind,
+          line = diff.source_line_for_hunk_offset(hunk, block.start),
+          lines = block.lines,
+          comment = comments[block.id] or "",
+        })
+      end
+
+      local range_comments = {}
+      for _, rc in ipairs(diff.get_range_comments_for_hunk(hunk, comments)) do
+        table.insert(range_comments, {
+          diff_start = rc.start_idx,
+          diff_end = rc.end_idx,
+          line = diff.source_line_for_hunk_offset(hunk, rc.start_idx),
+          comment = rc.comment,
+        })
+      end
+
+      table.insert(items, {
+        file = hunk.file_path,
+        header = hunk.header,
+        line = hunk.parsed and hunk.parsed.new_start or 1,
+        diff = hunk.lines,
+        changes = changes,
+        range_comments = #range_comments > 0 and range_comments or nil,
+      })
+    end
   end
 
   return {

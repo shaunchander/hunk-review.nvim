@@ -21,6 +21,13 @@ function M.close(state)
       api.nvim_win_set_buf(state.review_winid, state.review_bufnr)
     end
 
+    -- Restore window options
+    if state.peek_saved_winopts then
+      for opt, val in pairs(state.peek_saved_winopts) do
+        vim.wo[state.review_winid][opt] = val
+      end
+    end
+
     if state.peek_return_cursor then
       api.nvim_set_current_win(state.review_winid)
       pcall(api.nvim_win_set_cursor, state.review_winid, state.peek_return_cursor)
@@ -28,6 +35,7 @@ function M.close(state)
   end
 
   state.peek_return_cursor = nil
+  state.peek_saved_winopts = nil
 end
 
 function M.open(state, hunk, item)
@@ -47,6 +55,15 @@ function M.open(state, hunk, item)
 
   -- Save cursor position to return to
   state.peek_return_cursor = api.nvim_win_get_cursor(state.review_winid)
+
+  -- Save window options before modifying
+  state.peek_saved_winopts = {
+    number = vim.wo[state.review_winid].number,
+    relativenumber = vim.wo[state.review_winid].relativenumber,
+    cursorline = vim.wo[state.review_winid].cursorline,
+    signcolumn = vim.wo[state.review_winid].signcolumn,
+    wrap = vim.wo[state.review_winid].wrap,
+  }
 
   local target = state.repo_root .. "/" .. hunk.file_path
 
