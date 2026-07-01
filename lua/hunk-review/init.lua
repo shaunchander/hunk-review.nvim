@@ -11,13 +11,14 @@ local comments_sidebar = require("hunk-review.comments")
 
 local ns = api.nvim_create_namespace("hunk-review")
 local ns_linemode = api.nvim_create_namespace("hunk-review-linemode")
+local ns_comments = api.nvim_create_namespace("hunk-review-comments")
 
 local defaults = {
   base_branches = { "main", "master", "develop" },
   layout = {
     width = 0.96,
     height = 0.92,
-    explorer_width = 0.28,
+    explorer_width = 0.33, -- 1/3 of width for sidebar, 2/3 for diff view
   },
   diff_context = 3,
   custom_prompt = nil,
@@ -53,8 +54,48 @@ local state = {
   review_tabnr = nil,
 }
 
+-- Constants
+local CONSTANTS = {
+  SCROLLOFF_CENTER = 999, -- Centers cursor vertically in review pane
+  MIN_EXPLORER_WIDTH = 20, -- Minimum readable width for file tree
+  DIFF_CONTEXT_DEFAULT = 3, -- Default git diff context lines
+}
+
 local function notify(message, level)
   vim.notify(message, level or vim.log.levels.INFO, { title = "hunk-review.nvim" })
+end
+
+-- Helper: Safe function call with error logging
+local function safe_call(fn, context, severity)
+  severity = severity or vim.log.levels.DEBUG
+  local ok, result = pcall(fn)
+  if not ok then
+    vim.notify(
+      string.format("[hunk-review] %s: %s", context, result),
+      severity
+    )
+    return false, result
+  end
+  return true, result
+end
+
+-- Helper: Command-line input (no buffers, in-memory only)
+local function safe_input(opts, on_submit)
+  -- Use raw vim.fn.input() - pure command line, NO buffers
+  -- This bypasses any vim.ui.input overrides from snacks or other plugins
+  local ok, input = pcall(vim.fn.input, opts.prompt or "", opts.default or "")
+
+  if not ok then
+    return -- User cancelled or error
+  end
+
+  -- Empty string means user cancelled (ESC) or entered nothing
+  if input and input ~= "" then
+    local success, err = pcall(on_submit, vim.trim(input))
+    if not success then
+      notify("Input error: " .. tostring(err), vim.log.levels.ERROR)
+    end
+  end
 end
 
 local function setup_highlights()
@@ -62,6 +103,7 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "HunkReviewDiffBg", { bg = "#1a1a1a", default = true })
   vim.api.nvim_set_hl(0, "HunkReviewAddBg", { bg = "#1a2e1a", default = true })
   vim.api.nvim_set_hl(0, "HunkReviewDeleteBg", { bg = "#2e1a1a", default = true })
+  vim.api.nvim_set_hl(0, "HunkReviewComment", { link = "Comment", default = true })
 end
 
 local function apply_highlight(bufnr, namespace, hl)
@@ -285,10 +327,6 @@ local function current_change_at_cursor()
   end
 
   if item.kind == "diff_line" and item.block_id then
-    return hunk, item
-  end
-
-  if item.kind == "change_comment" and item.block_id then
     return hunk, item
   end
 
@@ -692,6 +730,78 @@ render_explorer = function()
   end
 end
 
+local function render_comment_extmarks(bufnr)
+  if not bufnr or not api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+
+  api.nvim_buf_clear_namespace(bufnr, ns_comments, 0, -1)
+
+  if vim.tbl_isempty(state.comments) then
+    return
+  end
+
+  -- Build lookup: for each diff_line in line_map, index by (hunk, diff_index) → buffer line
+  -- and by block_id (for block-end lines) → buffer line
+  local pos_by_hunk_idx = {}
+  local pos_by_block_end = {}
+
+  for line_nr, item in pairs(state.line_map) do
+    if item.kind == "diff_line" then
+      local hunk_key = tostring(item.hunk_index)
+      if not pos_by_hunk_idx[hunk_key] then
+        pos_by_hunk_idx[hunk_key] = {}
+      end
+      pos_by_hunk_idx[hunk_key][item.diff_index] = line_nr
+
+      if item.block_end and item.block_id then
+        pos_by_block_end[item.block_id] = line_nr
+      end
+    end
+  end
+
+  for key, comment_text in pairs(state.comments) do
+    if comment_text == "" then
+      goto next_comment
+    end
+
+    local buf_line
+
+    if key:sub(1, 7) == "range::" then
+      -- Range/line comment: parse hunk_id and end_idx from the key
+      local end_idx_str = key:match("::(%d+)$")
+      local end_idx = end_idx_str and tonumber(end_idx_str)
+      if not end_idx then
+        goto next_comment
+      end
+
+      -- Find the buffer line by scanning for matching hunk + diff_index
+      for line_nr, item in pairs(state.line_map) do
+        if item.kind == "diff_line" and item.diff_index == end_idx then
+          -- Verify this is the right hunk by checking the key prefix matches
+          local hunk_prefix = "range::" .. diff.make_hunk_id(item.hunk.file_path, item.hunk.lines) .. "::"
+          if key:sub(1, #hunk_prefix) == hunk_prefix then
+            buf_line = line_nr
+            break
+          end
+        end
+      end
+    else
+      -- Block comment: key is the block_id
+      buf_line = pos_by_block_end[key]
+    end
+
+    if buf_line then
+      local label = key:sub(1, 7) == "range::" and "      Comment: " or "      Comment: "
+      api.nvim_buf_set_extmark(bufnr, ns_comments, buf_line - 1, 0, {
+        virt_lines = { { { label .. comment_text, "HunkReviewComment" } } },
+      })
+    end
+
+    ::next_comment::
+  end
+end
+
 local function render_review()
   local bufnr = ensure_review_buffer()
   local lines = {}
@@ -763,15 +873,6 @@ local function render_review()
         end
       end
 
-      local range_comments = diff.get_range_comments_for_hunk(hunk, state.comments)
-      local range_ends = {}
-      for _, rc in ipairs(range_comments) do
-        if not range_ends[rc.end_idx] then
-          range_ends[rc.end_idx] = {}
-        end
-        table.insert(range_ends[rc.end_idx], rc)
-      end
-
       if hunk.file_path ~= prev_file then
         if prev_file then
           table.insert(lines, "")
@@ -841,46 +942,6 @@ local function render_review()
           block_end = block and block["end"] == diff_index or false,
         }
 
-        local ending_ranges = range_ends[diff_index]
-        if ending_ranges then
-          for _, rc in ipairs(ending_ranges) do
-            local label = rc.start_idx == rc.end_idx
-              and "      Comment: "
-              or ("      Comment (L" .. rc.start_idx .. "-" .. rc.end_idx .. "): ")
-            table.insert(lines, label .. rc.comment)
-            table.insert(highlights, { line = #lines - 1, group = "Comment" })
-            line_map[#lines] = {
-              kind = "range_comment",
-              hunk_index = hunk_index,
-              hunk = hunk,
-              diff_index = diff_index,
-              source_line = diff.source_line_for_hunk_offset(hunk, diff_index),
-              change_kind = change_kind,
-              range_key = rc.key,
-              range_start = rc.start_idx,
-              range_end = rc.end_idx,
-            }
-          end
-        end
-
-        if block and block["end"] == diff_index then
-          local comment = state.comments[block.id] or ""
-          if comment ~= "" then
-            table.insert(lines, "      Comment: " .. comment)
-            table.insert(highlights, { line = #lines - 1, group = "Comment" })
-            line_map[#lines] = {
-              kind = "change_comment",
-              hunk_index = hunk_index,
-              hunk = hunk,
-              diff_index = block.start,
-              source_line = diff.source_line_for_hunk_offset(hunk, diff_index),
-              change_kind = block.kind,
-              block_id = block.id,
-              block_start = false,
-              block_end = true,
-            }
-          end
-        end
       end
 
       table.insert(lines, "")
@@ -898,6 +959,7 @@ local function render_review()
   vim.bo[bufnr].modifiable = false
   state.line_map = line_map
   syntax.apply(bufnr, line_map)
+  render_comment_extmarks(bufnr)
 
   if state.review_winid and api.nvim_win_is_valid(state.review_winid) then
     api.nvim_win_set_buf(state.review_winid, bufnr)
@@ -1025,14 +1087,11 @@ function M.select_file()
 end
 
 function M.filter_files()
-  vim.ui.input({
+  safe_input({
     prompt = "File filter: ",
     default = state.file_filter or "",
   }, function(input)
-    if input == nil then
-      return
-    end
-    state.file_filter = vim.trim(input)
+    state.file_filter = input
     render_explorer()
   end)
 end
@@ -1161,17 +1220,13 @@ function M.add_comment()
   local existing = state.comments[comment_key] or ""
   local label = item.change_kind == "delete" and "deletion" or "addition"
 
-  vim.ui.input({
+  safe_input({
     prompt = "Comment on " .. label .. " block: ",
     default = existing,
   }, function(input)
-    if input == nil then
-      return
-    end
-
-    state.comments[comment_key] = vim.trim(input)
-    render()
-    comments_sidebar.refresh(state)
+    state.comments[comment_key] = input
+    render_comment_extmarks(state.review_bufnr)
+    render_explorer()
   end)
 end
 
@@ -1189,22 +1244,13 @@ function M.add_line_comment()
   local comment_key = diff.make_line_comment_key(item.hunk, item.diff_index)
   local existing = state.comments[comment_key] or ""
 
-  vim.ui.input({
+  safe_input({
     prompt = "Comment on line: ",
     default = existing,
   }, function(input)
-    if input == nil then return end
-    state.comments[comment_key] = vim.trim(input)
-    local save_hunk = item.hunk
-    local save_diff_index = item.diff_index
-    render()
-    comments_sidebar.refresh(state)
-    for line_nr, mapped in pairs(state.line_map) do
-      if mapped.kind == "diff_line" and mapped.hunk == save_hunk and mapped.diff_index == save_diff_index then
-        pcall(api.nvim_win_set_cursor, 0, { line_nr, 0 })
-        break
-      end
-    end
+    state.comments[comment_key] = input
+    render_comment_extmarks(state.review_bufnr)
+    render_explorer()
   end)
 end
 
@@ -1245,21 +1291,13 @@ function M.add_range_comment()
   local line_count = last_item.diff_index - first_item.diff_index + 1
   local prompt_label = line_count == 1 and "Comment on line: " or ("Comment on " .. line_count .. " lines: ")
 
-  vim.ui.input({
+  safe_input({
     prompt = prompt_label,
     default = existing,
   }, function(input)
-    if input == nil then return end
-    state.comments[comment_key] = vim.trim(input)
-    local save_diff_index = first_item.diff_index
-    render()
-    comments_sidebar.refresh(state)
-    for line_nr, mapped in pairs(state.line_map) do
-      if mapped.kind == "diff_line" and mapped.hunk == hunk and mapped.diff_index == save_diff_index then
-        pcall(api.nvim_win_set_cursor, 0, { line_nr, 0 })
-        break
-      end
-    end
+    state.comments[comment_key] = input
+    render_comment_extmarks(state.review_bufnr)
+    render_explorer()
   end)
 end
 
@@ -1272,32 +1310,30 @@ function M.delete_comment()
   local item = state.line_map[cursor_line]
   if not item then return end
 
-  local key
-  if item.kind == "change_comment" and item.block_id then
-    key = item.block_id
-  elseif item.kind == "range_comment" and item.range_key then
-    key = item.range_key
-  elseif item.kind == "diff_line" and item.hunk and item.diff_index then
-    local line_key = diff.make_line_comment_key(item.hunk, item.diff_index)
-    local has_line = state.comments[line_key] and state.comments[line_key] ~= ""
-    local has_block = item.block_id and state.comments[item.block_id] and state.comments[item.block_id] ~= ""
+  if item.kind ~= "diff_line" or not item.hunk or not item.diff_index then
+    return
+  end
 
-    if state.line_mode and has_line then
-      key = line_key
-    elseif not state.line_mode and has_block then
-      key = item.block_id
-    elseif has_line then
-      key = line_key
-    elseif has_block then
-      key = item.block_id
-    else
-      for k, comment in pairs(state.comments) do
-        if comment ~= "" and k:match("^range::") then
-          local s, e = k:match("::(%d+)::(%d+)$")
-          if s and tonumber(s) <= item.diff_index and tonumber(e) >= item.diff_index then
-            key = k
-            break
-          end
+  local key
+  local line_key = diff.make_line_comment_key(item.hunk, item.diff_index)
+  local has_line = state.comments[line_key] and state.comments[line_key] ~= ""
+  local has_block = item.block_id and state.comments[item.block_id] and state.comments[item.block_id] ~= ""
+
+  if state.line_mode and has_line then
+    key = line_key
+  elseif not state.line_mode and has_block then
+    key = item.block_id
+  elseif has_line then
+    key = line_key
+  elseif has_block then
+    key = item.block_id
+  else
+    for k, comment in pairs(state.comments) do
+      if comment ~= "" and k:match("^range::") then
+        local s, e = k:match("::(%d+)::(%d+)$")
+        if s and tonumber(s) <= item.diff_index and tonumber(e) >= item.diff_index then
+          key = k
+          break
         end
       end
     end
@@ -1308,8 +1344,8 @@ function M.delete_comment()
   end
 
   state.comments[key] = nil
-  render()
-  comments_sidebar.refresh(state)
+  render_comment_extmarks(state.review_bufnr)
+  render_explorer()
 end
 
 function M.export()

@@ -50,9 +50,19 @@ function M.render_tree_node(node, dir_path, lines, highlights, line_map, depth, 
     local collapsed = collapsed_dirs[full_path]
     local indent = string.rep("  ", depth)
     local chevron = collapsed and "▸" or "▾"
+    local dir_icon, dir_icon_hl = diff.file_icon(display_name, "directory")
 
-    table.insert(lines, indent .. chevron .. "  " .. display_name .. "/")
-    table.insert(highlights, { line = #lines - 1, group = "Directory" })
+    local line_text = indent .. chevron .. " " .. dir_icon .. " " .. display_name .. "/"
+    table.insert(lines, line_text)
+    local row = #lines - 1
+
+    -- Highlight the directory icon with its specific highlight group
+    if dir_icon_hl then
+      local icon_start = #indent + #chevron + 1
+      table.insert(highlights, { line = row, col_start = icon_start, col_end = icon_start + #dir_icon, group = dir_icon_hl })
+    end
+    -- Highlight the directory name
+    table.insert(highlights, { line = row, col_start = #indent + #chevron + 1 + #dir_icon + 1, col_end = -1, group = "Directory" })
     line_map[#lines] = { dir_path = full_path }
 
     if not collapsed then
@@ -72,7 +82,7 @@ function M.render_tree_node(node, dir_path, lines, highlights, line_map, depth, 
     local indent = string.rep("  ", depth)
     local selected = entry.file_path == selected_file
     local marker = selected and ">" or " "
-    local icon = diff.file_icon(entry.file_path)
+    local icon, icon_hl = diff.file_icon(entry.file_path)
 
     local prefix = indent .. marker .. " " .. icon .. " " .. fname
     local add_str = "  +" .. entry.additions
@@ -90,11 +100,22 @@ function M.render_tree_node(node, dir_path, lines, highlights, line_map, depth, 
     table.insert(lines, line_text)
     line_map[#lines] = { file_path = entry.file_path }
 
+    -- Highlight file icon with its specific color
+    if icon_hl then
+      local icon_start = #indent + #marker + 1
+      table.insert(highlights, { line = row, col_start = icon_start, col_end = icon_start + #icon, group = icon_hl })
+    end
+
+    -- Highlight selection
     if selected then
       table.insert(highlights, { line = row, col_start = 0, col_end = #prefix, group = "Directory" })
     end
+
+    -- Highlight change counts
     table.insert(highlights, { line = row, col_start = #prefix, col_end = #prefix + #add_str, group = "DiffAdd" })
     table.insert(highlights, { line = row, col_start = #prefix + #add_str, col_end = #prefix + #add_str + #del_str, group = "DiffDelete" })
+
+    -- Highlight comment count
     if comment_count > 0 then
       table.insert(highlights, { line = row, col_start = #prefix + #add_str + #del_str, col_end = -1, group = "Comment" })
     end

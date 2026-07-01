@@ -179,7 +179,19 @@ function M.count_file_comments(file_path, comments)
   return count
 end
 
-function M.file_icon(path)
+function M.file_icon(path, category)
+  -- Try to use Snacks.nvim icon utility if available
+  local has_snacks, snacks = pcall(require, "snacks")
+  if has_snacks and snacks.util and snacks.util.icon then
+    local icon, hl = snacks.util.icon(path, category or "file", { fallback = { file = "󰈔", dir = "󰉋" } })
+    return icon or "󰈔", hl
+  end
+
+  -- Fallback to basic icons if Snacks not available
+  if category == "directory" then
+    return "󰉋"
+  end
+
   local ext = path:match("%.([^.]+)$") or ""
   local by_ext = {
     lua = "",
