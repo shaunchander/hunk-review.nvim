@@ -489,6 +489,14 @@ local function ensure_layout()
   local explorer_bufnr = ensure_explorer_buffer()
   local review_bufnr = ensure_review_buffer()
 
+  -- Validate stored window IDs - clear if invalid
+  if state.explorer_winid and not api.nvim_win_is_valid(state.explorer_winid) then
+    state.explorer_winid = nil
+  end
+  if state.review_winid and not api.nvim_win_is_valid(state.review_winid) then
+    state.review_winid = nil
+  end
+
   -- If layout already exists in the review tab, validate and reuse or recreate
   if state.review_tabnr and api.nvim_tabpage_is_valid(state.review_tabnr) then
     local wins = api.nvim_tabpage_list_wins(state.review_tabnr)
@@ -531,12 +539,7 @@ local function ensure_layout()
 
   -- Get the window and set explorer buffer (this replaces the default scratch buffer)
   local win = api.nvim_get_current_win()
-  local temp_buf = api.nvim_win_get_buf(win)
   api.nvim_win_set_buf(win, explorer_bufnr)
-  -- Delete the orphaned scratch buffer created by tabnew
-  if api.nvim_buf_is_valid(temp_buf) and temp_buf ~= explorer_bufnr then
-    api.nvim_buf_delete(temp_buf, { force = true })
-  end
   state.explorer_winid = win
   vim.wo[win].wrap = false
   vim.wo[win].cursorline = true
@@ -548,12 +551,7 @@ local function ensure_layout()
   -- Create the review window on the right
   vim.cmd("rightbelow vsplit")
   state.review_winid = api.nvim_get_current_win()
-  local temp_buf2 = api.nvim_win_get_buf(state.review_winid)
   api.nvim_win_set_buf(state.review_winid, review_bufnr)
-  -- Delete the orphaned scratch buffer created by vsplit
-  if api.nvim_buf_is_valid(temp_buf2) and temp_buf2 ~= review_bufnr then
-    api.nvim_buf_delete(temp_buf2, { force = true })
-  end
   vim.wo[state.review_winid].wrap = true
   vim.wo[state.review_winid].cursorline = false
   vim.wo[state.review_winid].signcolumn = "no"
@@ -565,10 +563,16 @@ local function ensure_layout()
   -- Calculate explorer width based on config
   local total_width = vim.o.columns
   local explorer_width = math.floor(total_width * config.layout.explorer_width)
-  api.nvim_win_set_width(state.explorer_winid, math.max(explorer_width, 20))
+
+  -- Validate window still exists before setting width
+  if state.explorer_winid and api.nvim_win_is_valid(state.explorer_winid) then
+    api.nvim_win_set_width(state.explorer_winid, math.max(explorer_width, 20))
+  end
 
   -- Focus the review pane
-  api.nvim_set_current_win(state.review_winid)
+  if state.review_winid and api.nvim_win_is_valid(state.review_winid) then
+    api.nvim_set_current_win(state.review_winid)
+  end
 end
 
 -- Clipboard / confirm modal
