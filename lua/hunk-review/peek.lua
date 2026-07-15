@@ -12,6 +12,15 @@ local function clear_keymaps()
 end
 
 function M.close(state)
+  -- Clear file-view annotations before restoring the review buffer
+  if state.review_winid and api.nvim_win_is_valid(state.review_winid) then
+    local cur_bufnr = api.nvim_win_get_buf(state.review_winid)
+    if state.review_bufnr and cur_bufnr ~= state.review_bufnr then
+      local view_ns = api.nvim_create_namespace("hunk-review-fileview")
+      pcall(api.nvim_buf_clear_namespace, cur_bufnr, view_ns, 0, -1)
+    end
+  end
+
   clear_keymaps()
   pcall(api.nvim_del_augroup_by_name, "HunkReviewPeek")
 

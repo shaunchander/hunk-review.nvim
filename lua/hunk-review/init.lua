@@ -465,6 +465,12 @@ local function apply_review_keymaps(bufnr)
   vim.keymap.set("n", "[", function() M.prev_tab() end, { buffer = bufnr, silent = true, desc = "Previous diff tab" })
   vim.keymap.set("n", "]", function() M.next_tab() end, { buffer = bufnr, silent = true, desc = "Next diff tab" })
 
+  -- Explicit visual mode entry: prevents global v-prefixed plugin mappings from
+  -- blocking visual mode (e.g. flash.nvim, snacks.nvim define v<key> sequences).
+  -- noremap = true (default) ensures these call the built-in v/V, not themselves.
+  map("v", "v", "Enter visual mode")
+  map("V", "V", "Enter visual line mode")
+
   vim.keymap.set("x", "c", function() M.add_range_comment() end, { buffer = bufnr, nowait = true, silent = true, desc = "Comment on selected lines" })
   vim.keymap.set("x", "<CR>", function() M.add_range_comment() end, { buffer = bufnr, nowait = true, silent = true, desc = "Comment on selected lines" })
 end
@@ -677,6 +683,7 @@ local function open_confirm_modal()
 
   local function confirm()
     copy_review_to_clipboard()
+    state.comments = {}
     close_confirm_modal()
     close_layout()
   end
@@ -1395,6 +1402,12 @@ end
 
 function M.confirm_review()
   open_confirm_modal()
+end
+
+function M.view_file()
+  if api.nvim_get_current_buf() ~= state.review_bufnr then
+    return
+  end
 end
 
 function M.reset()

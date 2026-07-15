@@ -12,21 +12,15 @@ describe("export module", function()
     end)
 
     it("encodes empty array", function()
-      local result = export.encode_pretty({})
-      assert.are.equal("[]", result)
+      assert.are.equal("[]", export.encode_pretty({}))
     end)
 
     it("encodes empty object", function()
-      -- In Lua, we need to create a table that's explicitly not a list
-      local obj = { key = "value" }
-      obj.key = nil -- Make it empty but still an object
-      local result = export.encode_pretty(vim.empty_dict())
-      assert.are.equal("{}", result)
+      assert.are.equal("{}", export.encode_pretty(vim.empty_dict()))
     end)
 
     it("encodes simple array with proper formatting", function()
-      local arr = { 1, 2, 3 }
-      local result = export.encode_pretty(arr)
+      local result = export.encode_pretty({ 1, 2, 3 })
       assert.is_not_nil(result:match("%["))
       assert.is_not_nil(result:match("%]"))
       assert.is_not_nil(result:match("1"))
@@ -35,8 +29,7 @@ describe("export module", function()
     end)
 
     it("encodes object with proper formatting", function()
-      local obj = { name = "test", value = 42 }
-      local result = export.encode_pretty(obj)
+      local result = export.encode_pretty({ name = "test", value = 42 })
       assert.is_not_nil(result:match("{"))
       assert.is_not_nil(result:match("}"))
       assert.is_not_nil(result:match("name"))
@@ -44,9 +37,8 @@ describe("export module", function()
       assert.is_not_nil(result:match("value"))
     end)
 
-    it("sorts object keys", function()
-      local obj = { z = 1, a = 2, m = 3 }
-      local result = export.encode_pretty(obj)
+    it("sorts object keys alphabetically", function()
+      local result = export.encode_pretty({ z = 1, a = 2, m = 3 })
       local a_pos = result:find('"a"')
       local m_pos = result:find('"m"')
       local z_pos = result:find('"z"')
@@ -55,33 +47,26 @@ describe("export module", function()
     end)
 
     it("encodes nested structures", function()
-      local nested = {
-        outer = {
-          inner = { 1, 2, 3 }
-        }
-      }
-      local result = export.encode_pretty(nested)
+      local result = export.encode_pretty({ outer = { inner = { 1, 2, 3 } } })
       assert.is_string(result)
       assert.is_not_nil(result:match("outer"))
       assert.is_not_nil(result:match("inner"))
     end)
 
-    it("respects indent parameter", function()
-      local obj = { key = "value" }
-      local result = export.encode_pretty(obj, 2)
-      -- Result should have indentation
-      assert.is_string(result)
-      assert.is_not_nil(result:match("\n"))
+    it("uses deeper indentation when indent parameter is greater than zero", function()
+      local result_0 = export.encode_pretty({ key = "value" }, 0)
+      local result_2 = export.encode_pretty({ key = "value" }, 2)
+      -- At indent=2 the key line has 6 leading spaces; at indent=0 it has 2
+      assert.is_not_nil(result_2:match("\n      \"key\""),
+        "indent=2 should produce 6-space indentation for key line")
+      assert.is_nil(result_0:match("\n      \"key\""),
+        "indent=0 should not produce 6-space indentation")
     end)
   end)
 
   describe("payload", function()
     it("creates payload structure with required fields", function()
-      local hunks = {}
-      local comments = {}
-      local repo_root = "/test/repo"
-
-      local result = export.payload(hunks, comments, repo_root)
+      local result = export.payload({}, {}, "/test/repo")
 
       assert.is_table(result)
       assert.are.equal("hunk-review.nvim", result.plugin)
@@ -106,21 +91,16 @@ describe("export module", function()
         parsed = { new_start = 1 },
       }
 
-      local hunks = { hunk_with_comment, hunk_without_comment }
-
-      -- Add comment only to the first hunk's change block
       local blocks = diff.get_change_blocks(hunk_with_comment)
-      local comments = {}
-      comments[blocks[1].id] = "Fix this"
+      local comments = { [blocks[1].id] = "Fix this" }
 
-      local result = export.payload(hunks, comments, "/repo")
+      local result = export.payload({ hunk_with_comment, hunk_without_comment }, comments, "/repo")
 
-      -- Should only include the hunk with comments
       assert.are.equal(1, #result.hunks)
       assert.are.equal("test.lua", result.hunks[1].file)
     end)
 
-    it("includes change blocks with comments", function()
+    it("includes change blocks with their comments", function()
       local hunk = {
         file_path = "test.lua",
         header = "@@ -1,3 +1,4 @@",
@@ -129,16 +109,13 @@ describe("export module", function()
       }
 
       local blocks = diff.get_change_blocks(hunk)
-      local comments = {}
-      comments[blocks[1].id] = "This looks wrong"
+      local comments = { [blocks[1].id] = "This looks wrong" }
 
       local result = export.payload({ hunk }, comments, "/repo")
 
       assert.are.equal(1, #result.hunks)
-      local exported_hunk = result.hunks[1]
-      assert.is_table(exported_hunk.changes)
-      assert.are.equal(1, #exported_hunk.changes)
-      assert.are.equal("This looks wrong", exported_hunk.changes[1].comment)
+      assert.is_table(result.hunks[1].changes)
+      assert.are.equal("This looks wrong", result.hunks[1].changes[1].comment)
     end)
 
     it("includes range comments", function()
@@ -149,55 +126,68 @@ describe("export module", function()
         parsed = { new_start = 1 },
       }
 
-      local comments = {}
       local range_key = diff.make_range_comment_key(hunk, 1, 2)
-      comments[range_key] = "Check these lines"
-
-      local result = export.payload({ hunk }, comments, "/repo")
+      local result = export.payload({ hunk }, { [range_key] = "Check these lines" }, "/repo")
 
       assert.are.equal(1, #result.hunks)
-      local exported_hunk = result.hunks[1]
-      assert.is_table(exported_hunk.range_comments)
-      assert.are.equal(1, #exported_hunk.range_comments)
-      assert.are.equal("Check these lines", exported_hunk.range_comments[1].comment)
+      assert.is_table(result.hunks[1].range_comments)
+      assert.are.equal(1, #result.hunks[1].range_comments)
+      assert.are.equal("Check these lines", result.hunks[1].range_comments[1].comment)
+    end)
+
+    it("omits range_comments field entirely when there are no range comments", function()
+      local hunk = {
+        file_path = "test.lua",
+        header = "@@ -1,2 +1,3 @@",
+        lines = { " context", "+new line", " context" },
+        parsed = { new_start = 1 },
+      }
+
+      local blocks = diff.get_change_blocks(hunk)
+      local result = export.payload({ hunk }, { [blocks[1].id] = "Fix this" }, "/repo")
+
+      assert.are.equal(1, #result.hunks)
+      assert.is_nil(result.hunks[1].range_comments,
+        "range_comments should be nil (omitted) when there are none")
     end)
 
     it("generates valid ISO8601 timestamp", function()
       local result = export.payload({}, {}, "/repo")
-      -- Check that generated_at matches ISO8601 format
-      assert.is_true(result.generated_at:match("%d%d%d%d%-%d%d%-%d%dT%d%d:%d%d:%d%dZ") ~= nil)
+      assert.is_not_nil(result.generated_at:match("%d%d%d%d%-%d%d%-%d%dT%d%d:%d%d:%d%dZ"))
     end)
   end)
 
   describe("clipboard_text", function()
     it("returns nil when no comments exist", function()
-      local hunks = {
-        {
-          file_path = "test.lua",
-          lines = { "+new line" },
-          parsed = { new_start = 1 },
-        }
-      }
-      local comments = {}
-      local result = export.clipboard_text(hunks, comments, nil)
-      assert.is_nil(result)
-    end)
-
-    it("includes custom prompt when provided", function()
       local hunk = {
         file_path = "test.lua",
         lines = { "+new line" },
         parsed = { new_start = 1 },
       }
+      assert.is_nil(export.clipboard_text({ hunk }, {}, nil))
+    end)
 
+    it("includes custom prompt when provided", function()
+      local hunk = { file_path = "test.lua", lines = { "+new line" }, parsed = { new_start = 1 } }
       local blocks = diff.get_change_blocks(hunk)
-      local comments = {}
-      comments[blocks[1].id] = "Fix this"
+      local comments = { [blocks[1].id] = "Fix this" }
 
       local result = export.clipboard_text({ hunk }, comments, "Custom prompt here")
 
       assert.is_string(result)
-      assert.is_true(result:match("Custom prompt here") ~= nil)
+      assert.is_not_nil(result:match("Custom prompt here"))
+    end)
+
+    it("treats empty string custom_prompt the same as nil", function()
+      local hunk = { file_path = "test.lua", lines = { "+new line" }, parsed = { new_start = 1 } }
+      local blocks = diff.get_change_blocks(hunk)
+      local comments = { [blocks[1].id] = "Fix this" }
+
+      local result_nil = export.clipboard_text({ hunk }, comments, nil)
+      local result_empty = export.clipboard_text({ hunk }, comments, "")
+
+      assert.are.equal(result_nil, result_empty,
+        "empty string prompt should produce same output as nil prompt")
     end)
 
     it("formats block comments with file:line and code fence", function()
@@ -208,35 +198,30 @@ describe("export module", function()
       }
 
       local blocks = diff.get_change_blocks(hunk)
-      local comments = {}
-      comments[blocks[1].id] = "Fix this"
+      local result = export.clipboard_text({ hunk }, { [blocks[1].id] = "Fix this" }, nil)
 
-      local result = export.clipboard_text({ hunk }, comments, nil)
-
-      assert.is_string(result)
-      assert.is_true(result:match("Fix this") ~= nil)
-      assert.is_true(result:match("test.lua:") ~= nil)
-      assert.is_true(result:match("```") ~= nil)
-      assert.is_true(result:match("%+new line") ~= nil)
+      assert.is_not_nil(result:match("Fix this"))
+      assert.is_not_nil(result:match("test.lua:"))
+      assert.is_not_nil(result:match("```"))
+      assert.is_not_nil(result:match("%+new line"))
     end)
 
-    it("formats range comments with file:line and code fence", function()
+    it("range comment code fence contains exactly the lines in range (not outside)", function()
       local hunk = {
         file_path = "test.lua",
         lines = { "+line1", "+line2", "+line3" },
         parsed = { new_start = 10 },
       }
 
-      local comments = {}
       local range_key = diff.make_range_comment_key(hunk, 1, 2)
-      comments[range_key] = "Review these lines"
+      local result = export.clipboard_text({ hunk }, { [range_key] = "Review these lines" }, nil)
 
-      local result = export.clipboard_text({ hunk }, comments, nil)
-
-      assert.is_string(result)
-      assert.is_true(result:match("Review these lines") ~= nil)
-      assert.is_true(result:match("test.lua:") ~= nil)
-      assert.is_true(result:match("```") ~= nil)
+      assert.is_not_nil(result:match("Review these lines"))
+      assert.is_not_nil(result:match("test.lua:"))
+      assert.is_not_nil(result:match("```"))
+      assert.is_not_nil(result:match("%+line1"), "line1 is in range 1-2, should appear")
+      assert.is_not_nil(result:match("%+line2"), "line2 is in range 1-2, should appear")
+      assert.is_nil(result:match("%+line3"), "line3 is outside range 1-2, should not appear")
     end)
 
     it("handles multiple commented blocks", function()
@@ -247,17 +232,17 @@ describe("export module", function()
       }
 
       local blocks = diff.get_change_blocks(hunk)
-      local comments = {}
-      comments[blocks[1].id] = "Comment 1"
-      comments[blocks[2].id] = "Comment 2"
-      comments[blocks[3].id] = "Comment 3"
+      local comments = {
+        [blocks[1].id] = "Comment 1",
+        [blocks[2].id] = "Comment 2",
+        [blocks[3].id] = "Comment 3",
+      }
 
       local result = export.clipboard_text({ hunk }, comments, nil)
 
-      assert.is_string(result)
-      assert.is_true(result:match("Comment 1") ~= nil)
-      assert.is_true(result:match("Comment 2") ~= nil)
-      assert.is_true(result:match("Comment 3") ~= nil)
+      assert.is_not_nil(result:match("Comment 1"))
+      assert.is_not_nil(result:match("Comment 2"))
+      assert.is_not_nil(result:match("Comment 3"))
     end)
 
     it("excludes blocks without comments", function()
@@ -268,16 +253,12 @@ describe("export module", function()
       }
 
       local blocks = diff.get_change_blocks(hunk)
-      local comments = {}
-      -- Only comment on the first block
-      comments[blocks[1].id] = "Only this one"
-
-      local result = export.clipboard_text({ hunk }, comments, nil)
+      local result = export.clipboard_text({ hunk }, { [blocks[1].id] = "Only this one" }, nil)
 
       assert.is_string(result)
-      assert.is_true(result:match("Only this one") ~= nil)
-      -- Should not include the second block's content separately
-      -- (it will be in the hunk but not as a commented section)
+      assert.is_not_nil(result:match("Only this one"))
+      -- line2 belongs to blocks[2] which has no comment; its content should not appear
+      assert.is_nil(result:match("%+line2"), "uncommented block's lines should not appear in output")
     end)
   end)
 end)

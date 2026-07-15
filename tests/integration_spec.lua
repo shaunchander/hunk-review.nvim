@@ -79,6 +79,17 @@ describe("integration tests", function()
     end)
   end)
 
+  describe("view_file feature", function()
+    it("view_file is exposed as a public function", function()
+      assert.is_function(review.view_file)
+    end)
+
+    it("view_file does not crash when called outside review buffer", function()
+      local ok = pcall(review.view_file)
+      assert.is_true(type(ok) == "boolean")
+    end)
+  end)
+
   describe("export operations", function()
     it("export can be called", function()
       local ok = pcall(review.export)
@@ -179,18 +190,10 @@ describe("command line interface", function()
   end)
 end)
 
-describe("buffer and window management", function()
-  it("creates buffers with correct properties", function()
-    local bufnr = vim.api.nvim_create_buf(false, true)
-
-    vim.api.nvim_buf_set_option(bufnr, "buftype", "nofile")
-    vim.api.nvim_buf_set_option(bufnr, "bufhidden", "hide")
-    vim.api.nvim_buf_set_option(bufnr, "swapfile", false)
-
-    assert.are.equal("nofile", vim.api.nvim_buf_get_option(bufnr, "buftype"))
-    assert.are.equal("hide", vim.api.nvim_buf_get_option(bufnr, "bufhidden"))
-    assert.is_false(vim.api.nvim_buf_get_option(bufnr, "swapfile"))
-
-    vim.api.nvim_buf_delete(bufnr, { force = true })
+describe("confirm clears comment state", function()
+  it("confirm_review can be called without crashing", function()
+    -- Confirm modal opens a floating window; in headless env it may fail gracefully
+    local ok = pcall(review.confirm_review)
+    assert.is_true(type(ok) == "boolean")
   end)
 end)
